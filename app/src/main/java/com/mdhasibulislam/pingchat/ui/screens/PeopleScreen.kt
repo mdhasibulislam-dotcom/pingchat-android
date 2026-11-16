@@ -10,6 +10,7 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
@@ -44,7 +45,7 @@ import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.TimeFormat
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
-import com.mdhasibulislam.pingchat.ui.theme.PingChatColors
+import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.PeopleViewModel
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -63,7 +64,7 @@ fun PeopleScreen(
     val error by viewModel.error.collectAsState()
     val openedConversation by viewModel.openedConversation.collectAsState()
     val onlineIds by SessionManager.onlineIds.collectAsState()
-    val colors = PingChatColors
+    val colors = pingChatColors
     var query by remember { mutableStateOf("") }
     var tab by remember { mutableIntStateOf(0) }
 
@@ -92,7 +93,7 @@ fun PeopleScreen(
                 Text("People", style = MaterialTheme.typography.headlineMedium, color = colors.text)
                 Text("Find friends and send requests.", style = MaterialTheme.typography.bodyMedium, color = colors.muted)
             }
-            if (loading) CircularProgressIndicator(modifier = androidx.compose.ui.Modifier.size(20.dp), strokeWidth = 2.dp)
+            if (loading) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
         }
         OutlinedTextField(
             value = query,
@@ -199,7 +200,7 @@ private fun PersonRow(
     onPreview: () -> Unit,
     onAction: () -> Unit
 ) {
-    val colors = PingChatColors
+    val colors = pingChatColors
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -266,7 +267,7 @@ fun ProfilePreviewDialog(
     onDecline: () -> Unit,
     onDismiss: () -> Unit
 ) {
-    val colors = PingChatColors
+    val colors = pingChatColors
     val memberSince = remember(profile.createdAt) {
         val instant = TimeFormat.parse(profile.createdAt)
         if (instant == null) ""

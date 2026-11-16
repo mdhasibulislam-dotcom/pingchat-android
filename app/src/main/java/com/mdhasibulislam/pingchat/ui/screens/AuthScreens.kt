@@ -42,13 +42,13 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.mdhasibulislam.pingchat.data.Supabase
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
-import com.mdhasibulislam.pingchat.ui.theme.PingChatColors
+import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.AuthViewModel
 
 /** Shared auth chrome: logo, title, error/info banners. */
 @Composable
 private fun AuthShell(title: String, subtitle: String, content: @Composable () -> Unit) {
-    val colors = PingChatColors
+    val colors = pingChatColors
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -80,7 +80,7 @@ private fun AuthShell(title: String, subtitle: String, content: @Composable () -
 
 @Composable
 private fun AuthMessage(state: com.mdhasibulislam.pingchat.ui.viewmodel.AuthUiState) {
-    val colors = PingChatColors
+    val colors = pingChatColors
     if (state.error != null) {
         Text(
             text = state.error,
@@ -160,7 +160,7 @@ private fun OrDivider() {
         horizontalArrangement = Arrangement.spacedBy(12.dp)
     ) {
         androidx.compose.material3.Divider(modifier = Modifier.weight(1f))
-        Text("or", color = PingChatColors.muted, style = MaterialTheme.typography.bodySmall)
+        Text("or", color = pingChatColors.muted, style = MaterialTheme.typography.bodySmall)
         androidx.compose.material3.Divider(modifier = Modifier.weight(1f))
     }
 }
@@ -210,7 +210,7 @@ fun LoginScreen(
             Text(
                 "Google sign-in needs the Web client ID (see README). Email login works now.",
                 style = MaterialTheme.typography.bodySmall,
-                color = PingChatColors.muted,
+                color = pingChatColors.muted,
                 textAlign = TextAlign.Center
             )
         }
@@ -251,7 +251,7 @@ fun RegisterScreen(
             supportingText = {
                 Text(
                     state.usernameHint ?: "3–20 characters: letters, numbers, underscore.",
-                    color = if (state.usernameOk) Emerald else PingChatColors.muted
+                    color = if (state.usernameOk) Emerald else pingChatColors.muted
                 )
             }
         )

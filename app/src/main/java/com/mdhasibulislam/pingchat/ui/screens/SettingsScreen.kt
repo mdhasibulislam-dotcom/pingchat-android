@@ -34,7 +34,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
-import com.mdhasibulislam.pingchat.ui.theme.PingChatColors
+import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
 
 /** Settings — theme, privacy, ringtone, notifications, change password, log out. */
@@ -49,7 +49,7 @@ fun SettingsScreen(
     val saving by viewModel.saving.collectAsState()
     val error by viewModel.error.collectAsState()
     val info by viewModel.info.collectAsState()
-    val colors = PingChatColors
+    val colors = pingChatColors
     var ringtone by remember { mutableStateOf(prefs.ringtoneEnabled) }
     var isPublic by remember(profile?.isPublic) { mutableStateOf(profile?.isPublic ?: true) }
     var newPassword by remember { mutableStateOf("") }
@@ -180,7 +180,7 @@ private fun SettingsRow(
     checked: Boolean,
     onCheckedChange: (Boolean) -> Unit
 ) {
-    val colors = PingChatColors
+    val colors = pingChatColors
     Row(
         modifier = Modifier
             .fillMaxWidth()
@@ -198,7 +198,7 @@ private fun SettingsRow(
 /** Calls tab placeholder — audio/video calls are Phase 2. */
 @Composable
 fun CallsScreen() {
-    val colors = PingChatColors
+    val colors = pingChatColors
     Column(
         modifier = Modifier
             .fillMaxSize()

@@ -44,7 +44,7 @@ import com.mdhasibulislam.pingchat.data.TimeFormat
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
-import com.mdhasibulislam.pingchat.ui.theme.PingChatColors
+import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.ChatsViewModel
 
 /** Chats tab: conversation list with search, last message, time, unread badge. */
@@ -55,7 +55,7 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
     val error by viewModel.error.collectAsState()
     val onlineIds by SessionManager.onlineIds.collectAsState()
     val myId = SessionManager.user.collectAsState().value?.id
-    val colors = PingChatColors
+    val colors = pingChatColors
     var query by remember { mutableStateOf("") }
 
     val filtered = remember(items, query) {
@@ -135,7 +135,7 @@ private fun ConversationRow(
     myId: String?,
     onClick: () -> Unit
 ) {
-    val colors = PingChatColors
+    val colors = pingChatColors
     val last = item.lastMessage
     val preview = when {
         last == null -> "No messages yet — say hello."

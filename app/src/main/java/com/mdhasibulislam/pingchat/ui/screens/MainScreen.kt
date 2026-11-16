@@ -14,6 +14,7 @@ import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
@@ -42,12 +43,13 @@ import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
-import com.mdhasibulislam.pingchat.ui.theme.PingChatColors
+import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.ChatsViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.PeopleViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
 
 /** Main app shell: top bar + bottom tabs (Chats / Calls / People / Profile). */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     onOpenChat: (String) -> Unit,
@@ -61,7 +63,7 @@ fun MainScreen(
     val profileViewModel: ProfileViewModel = viewModel()
     val myProfile by SessionManager.profile.collectAsState()
     val onlineIds by SessionManager.onlineIds.collectAsState()
-    val colors = PingChatColors
+    val colors = pingChatColors
 
     // Profile preview dialog (People tab) — state lives here so it can use
     // the same PeopleViewModel instance for the friend actions.

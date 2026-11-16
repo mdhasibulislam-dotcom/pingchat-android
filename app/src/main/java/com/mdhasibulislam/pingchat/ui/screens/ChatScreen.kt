@@ -76,7 +76,7 @@ import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.components.TickIcon
 import com.mdhasibulislam.pingchat.ui.components.TypingIndicator
-import com.mdhasibulislam.pingchat.ui.theme.PingChatColors
+import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.ChatViewModel
 
 class ChatViewModelFactory(private val conversationId: String) : ViewModelProvider.Factory {
@@ -129,7 +129,7 @@ fun ChatScreen(
     val deliveredIds by viewModel.deliveredIds.collectAsState()
     val onlineIds by SessionManager.onlineIds.collectAsState()
     val myId = viewModel.myId
-    val colors = PingChatColors
+    val colors = pingChatColors
 
     val peerOnline = peer?.let { onlineIds.contains(it.id) } ?: false
     val clipboard = LocalClipboardManager.current
@@ -446,10 +446,10 @@ private fun DayLabel(text: String) {
         Text(
             text = text,
             style = MaterialTheme.typography.bodySmall,
-            color = PingChatColors.muted,
+            color = pingChatColors.muted,
             modifier = Modifier
                 .clip(RoundedCornerShape(999.dp))
-                .background(PingChatColors.card2)
+                .background(pingChatColors.card2)
                 .padding(horizontal = 12.dp, vertical = 4.dp)
         )
     }
@@ -466,7 +466,7 @@ private fun MessageBubble(
     onLongPress: () -> Unit,
     onReactionChipClick: (String) -> Unit
 ) {
-    val colors = PingChatColors
+    val colors = pingChatColors
     Column(
         modifier = Modifier.fillMaxWidth(),
         horizontalAlignment = if (mine) Alignment.End else Alignment.Start

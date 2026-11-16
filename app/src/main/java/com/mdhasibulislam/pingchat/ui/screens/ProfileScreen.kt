@@ -46,7 +46,7 @@ import com.mdhasibulislam.pingchat.data.TimeFormat
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
-import com.mdhasibulislam.pingchat.ui.theme.PingChatColors
+import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -62,7 +62,7 @@ fun ProfileScreen(viewModel: ProfileViewModel, onSettingsClick: () -> Unit) {
     val info by viewModel.info.collectAsState()
     val friendsCount by viewModel.friendsCount.collectAsState()
     val chatsCount by viewModel.chatsCount.collectAsState()
-    val colors = PingChatColors
+    val colors = pingChatColors
     val context = LocalContext.current
 
     var editing by remember { mutableStateOf(false) }
