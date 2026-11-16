@@ -1,0 +1,169 @@
+package com.mdhasibulislam.pingchat.ui.screens
+
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.DarkMode
+import androidx.compose.material.icons.filled.LightMode
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.mdhasibulislam.pingchat.data.FriendState
+import com.mdhasibulislam.pingchat.data.Profile
+import com.mdhasibulislam.pingchat.data.SessionManager
+import com.mdhasibulislam.pingchat.ui.components.Avatar
+import com.mdhasibulislam.pingchat.ui.components.AvatarSize
+import com.mdhasibulislam.pingchat.ui.theme.Emerald
+import com.mdhasibulislam.pingchat.ui.theme.PingChatColors
+import com.mdhasibulislam.pingchat.ui.viewmodel.ChatsViewModel
+import com.mdhasibulislam.pingchat.ui.viewmodel.PeopleViewModel
+import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
+
+/** Main app shell: top bar + bottom tabs (Chats / Calls / People / Profile). */
+@Composable
+fun MainScreen(
+    onOpenChat: (String) -> Unit,
+    onSettingsClick: () -> Unit,
+    darkTheme: Boolean,
+    onDarkThemeChange: (Boolean) -> Unit
+) {
+    var tab by remember { mutableIntStateOf(0) }
+    val chatsViewModel: ChatsViewModel = viewModel()
+    val peopleViewModel: PeopleViewModel = viewModel()
+    val profileViewModel: ProfileViewModel = viewModel()
+    val myProfile by SessionManager.profile.collectAsState()
+    val onlineIds by SessionManager.onlineIds.collectAsState()
+    val colors = PingChatColors
+
+    // Profile preview dialog (People tab) — state lives here so it can use
+    // the same PeopleViewModel instance for the friend actions.
+    var preview by remember { mutableStateOf<Pair<Profile, FriendState>?>(null) }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Box(
+                            modifier = Modifier
+                                .size(36.dp)
+                                .clip(RoundedCornerShape(10.dp))
+                                .background(Emerald),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text("P", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+                        }
+                        Spacer(Modifier.size(8.dp))
+                        Text(
+                            "PingChat",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp,
+                            color = colors.text
+                        )
+                    }
+                },
+                actions = {
+                    IconButton(onClick = { onDarkThemeChange(!darkTheme) }) {
+                        Icon(
+                            imageVector = if (darkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
+                            contentDescription = if (darkTheme) "Light theme" else "Dark theme",
+                            tint = colors.text
+                        )
+                    }
+                    Avatar(
+                        profile = myProfile,
+                        size = AvatarSize.SM,
+                        modifier = Modifier.padding(end = 8.dp)
+                    )
+                }
+            )
+        },
+        bottomBar = {
+            NavigationBar {
+                NavigationBarItem(
+                    selected = tab == 0,
+                    onClick = { tab = 0 },
+                    icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Chats") },
+                    label = { Text("Chats") }
+                )
+                NavigationBarItem(
+                    selected = tab == 1,
+                    onClick = { tab = 1 },
+                    icon = { Icon(Icons.Default.Phone, contentDescription = "Calls") },
+                    label = { Text("Calls") }
+                )
+                NavigationBarItem(
+                    selected = tab == 2,
+                    onClick = { tab = 2 },
+                    icon = { Icon(Icons.Default.People, contentDescription = "People") },
+                    label = { Text("People") }
+                )
+                NavigationBarItem(
+                    selected = tab == 3,
+                    onClick = { tab = 3 },
+                    icon = { Icon(Icons.Default.Person, contentDescription = "Profile") },
+                    label = { Text("Profile") }
+                )
+            }
+        }
+    ) { padding ->
+        Box(modifier = Modifier.padding(padding)) {
+            when (tab) {
+                0 -> ChatsScreen(chatsViewModel, onOpenChat)
+                1 -> CallsScreen()
+                2 -> PeopleScreen(
+                    viewModel = peopleViewModel,
+                    onOpenChat = onOpenChat,
+                    onPreview = { profile, state -> preview = profile to state }
+                )
+                3 -> ProfileScreen(profileViewModel, onSettingsClick)
+            }
+        }
+    }
+
+    preview?.let { (profile, state) ->
+        ProfilePreviewDialog(
+            profile = profile,
+            state = state,
+            online = onlineIds.contains(profile.id),
+            showMessageButton = true,
+            onMessage = {
+                preview = null
+                peopleViewModel.openChat(profile.id)
+            },
+            onAddFriend = { peopleViewModel.sendRequest(profile.id) },
+            onCancelRequest = { peopleViewModel.cancelRequest(profile.id) },
+            onAccept = { peopleViewModel.respond(profile.id, true) },
+            onDecline = { peopleViewModel.respond(profile.id, false) },
+            onDismiss = { preview = null }
+        )
+    }
+}

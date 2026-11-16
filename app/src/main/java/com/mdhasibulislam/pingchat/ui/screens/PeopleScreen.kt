@@ -1,0 +1,333 @@
+package com.mdhasibulislam.pingchat.ui.screens
+
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Tab
+import androidx.compose.material3.TabRow
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import com.mdhasibulislam.pingchat.data.FriendState
+import com.mdhasibulislam.pingchat.data.Profile
+import com.mdhasibulislam.pingchat.data.SessionManager
+import com.mdhasibulislam.pingchat.data.TimeFormat
+import com.mdhasibulislam.pingchat.ui.components.Avatar
+import com.mdhasibulislam.pingchat.ui.components.AvatarSize
+import com.mdhasibulislam.pingchat.ui.theme.PingChatColors
+import com.mdhasibulislam.pingchat.ui.viewmodel.PeopleViewModel
+import java.time.format.DateTimeFormatter
+import java.util.Locale
+
+/** People tab: directory + friend requests. Mirrors js/people.js + js/friends.js. */
+@Composable
+fun PeopleScreen(
+    viewModel: PeopleViewModel,
+    onOpenChat: (String) -> Unit,
+    onPreview: (Profile, FriendState) -> Unit
+) {
+    val users by viewModel.users.collectAsState()
+    val requests by viewModel.requests.collectAsState()
+    val statuses by viewModel.statuses.collectAsState()
+    val loading by viewModel.loading.collectAsState()
+    val error by viewModel.error.collectAsState()
+    val openedConversation by viewModel.openedConversation.collectAsState()
+    val onlineIds by SessionManager.onlineIds.collectAsState()
+    val colors = PingChatColors
+    var query by remember { mutableStateOf("") }
+    var tab by remember { mutableIntStateOf(0) }
+
+    LaunchedEffect(openedConversation) {
+        val id = openedConversation ?: return@LaunchedEffect
+        viewModel.consumeOpenedConversation()
+        onOpenChat(id)
+    }
+
+    val filtered = remember(users, query) {
+        if (query.isBlank()) users
+        else users.filter {
+            it.fullName.contains(query, ignoreCase = true) ||
+                it.username.contains(query, ignoreCase = true)
+        }
+    }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("People", style = MaterialTheme.typography.headlineMedium, color = colors.text)
+                Text("Find friends and send requests.", style = MaterialTheme.typography.bodyMedium, color = colors.muted)
+            }
+            if (loading) CircularProgressIndicator(modifier = androidx.compose.ui.Modifier.size(20.dp), strokeWidth = 2.dp)
+        }
+        OutlinedTextField(
+            value = query,
+            onValueChange = { query = it },
+            placeholder = { Text("Search people") },
+            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = colors.muted) },
+            singleLine = true,
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp)
+        )
+        TabRow(selectedTabIndex = tab, modifier = Modifier.fillMaxWidth()) {
+            Tab(selected = tab == 0, onClick = { tab = 0 }, text = { Text("All users") })
+            Tab(
+                selected = tab == 1,
+                onClick = { tab = 1 },
+                text = { Text("Requests" + if (requests.isNotEmpty()) " (${requests.size})" else "") }
+            )
+        }
+        if (error != null) {
+            Text(
+                text = error ?: "",
+                color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodyMedium,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
+        }
+        if (tab == 0) {
+            if (filtered.isEmpty() && !loading) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No people found.", color = colors.muted, modifier = Modifier.padding(24.dp))
+                }
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(filtered, key = { it.id }) { person ->
+                        val state = statuses[person.id] ?: FriendState.NONE
+                        PersonRow(
+                            person = person,
+                            online = onlineIds.contains(person.id),
+                            state = state,
+                            canSeeBio = canSeeDetails(person, state),
+                            onPreview = { onPreview(person, state) },
+                            onAction = {
+                                when (state) {
+                                    FriendState.NONE, FriendState.DECLINED -> viewModel.sendRequest(person.id)
+                                    FriendState.PENDING_OUT -> viewModel.cancelRequest(person.id)
+                                    FriendState.PENDING_IN -> { /* handled in the request row */ }
+                                    FriendState.FRIENDS -> viewModel.openChat(person.id)
+                                }
+                            }
+                        )
+                    }
+                }
+            }
+        } else {
+            if (requests.isEmpty() && !loading) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text("No pending friend requests.", color = colors.muted, modifier = Modifier.padding(24.dp))
+                }
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(requests, key = { it.first.id }) { (friendship, profile) ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp, vertical = 12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Avatar(profile = profile, size = AvatarSize.MD, online = onlineIds.contains(profile.id))
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(profile.fullName.ifBlank { profile.username }, style = MaterialTheme.typography.titleMedium, color = colors.text)
+                                Text("@${profile.username}", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                            }
+                            Button(onClick = { viewModel.respond(friendship.requesterId, true) }) {
+                                Text("Accept")
+                            }
+                            Spacer(Modifier.width(8.dp))
+                            OutlinedButton(onClick = { viewModel.respond(friendship.requesterId, false) }) {
+                                Text("Decline")
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/** Private profiles show full info only to friends or while a request is pending. */
+fun canSeeDetails(profile: Profile, state: FriendState): Boolean {
+    return profile.isPublic ||
+        state == FriendState.FRIENDS ||
+        state == FriendState.PENDING_IN ||
+        state == FriendState.PENDING_OUT
+}
+
+@Composable
+private fun PersonRow(
+    person: Profile,
+    online: Boolean,
+    state: FriendState,
+    canSeeBio: Boolean,
+    onPreview: () -> Unit,
+    onAction: () -> Unit
+) {
+    val colors = PingChatColors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Avatar(
+            profile = person,
+            size = AvatarSize.MD,
+            online = online,
+            modifier = Modifier.clickable(onClick = onPreview)
+        )
+        Spacer(Modifier.width(12.dp))
+        Column(
+            modifier = Modifier
+                .weight(1f)
+                .clickable(onClick = onPreview)
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    person.fullName.ifBlank { person.username },
+                    style = MaterialTheme.typography.titleMedium,
+                    color = colors.text,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                    modifier = Modifier.weight(1f, fill = false)
+                )
+                if (online) {
+                    Text(" · Online", style = MaterialTheme.typography.bodySmall, color = colors.text)
+                }
+            }
+            Text("@${person.username}", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+            if (canSeeBio && !person.bio.isNullOrBlank()) {
+                Text(
+                    person.bio,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.muted,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+        }
+        Spacer(Modifier.width(8.dp))
+        when (state) {
+            FriendState.NONE, FriendState.DECLINED -> OutlinedButton(onClick = onAction) { Text("Add friend") }
+            FriendState.PENDING_OUT -> OutlinedButton(onClick = onAction) { Text("Pending") }
+            FriendState.PENDING_IN -> Text("Request pending", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+            FriendState.FRIENDS -> Button(onClick = onAction) { Text("Message") }
+        }
+    }
+}
+
+/** Profile preview dialog — same contents and order as the web app's modal. */
+@Composable
+fun ProfilePreviewDialog(
+    profile: Profile,
+    state: FriendState,
+    online: Boolean,
+    showMessageButton: Boolean,
+    onMessage: () -> Unit,
+    onAddFriend: () -> Unit,
+    onCancelRequest: () -> Unit,
+    onAccept: () -> Unit,
+    onDecline: () -> Unit,
+    onDismiss: () -> Unit
+) {
+    val colors = PingChatColors
+    val memberSince = remember(profile.createdAt) {
+        val instant = TimeFormat.parse(profile.createdAt)
+        if (instant == null) ""
+        else DateTimeFormatter.ofPattern("MMMM d, yyyy", Locale.US).format(instant.atZone(java.time.ZoneId.systemDefault()))
+    }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        confirmButton = {
+            TextButton(onClick = onDismiss) { Text("Close") }
+        },
+        dismissButton = null,
+        title = null,
+        text = {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Avatar(profile = profile, size = AvatarSize.LG, online = online)
+                Spacer(Modifier.height(12.dp))
+                Text(
+                    profile.fullName.ifBlank { profile.username },
+                    style = MaterialTheme.typography.titleLarge,
+                    color = colors.text
+                )
+                Text("@${profile.username}", style = MaterialTheme.typography.bodyMedium, color = colors.muted)
+                Text(
+                    if (online) "Online" else "Offline",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = colors.muted
+                )
+                Spacer(Modifier.height(12.dp))
+                if (canSeeDetails(profile, state)) {
+                    if (!profile.bio.isNullOrBlank()) {
+                        Text(profile.bio, style = MaterialTheme.typography.bodyMedium, color = colors.text)
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    if (memberSince.isNotBlank()) {
+                        Text("Member since $memberSince", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                    }
+                }
+                Spacer(Modifier.height(16.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    when (state) {
+                        FriendState.FRIENDS -> {
+                            if (showMessageButton) {
+                                Button(onClick = onMessage) { Text("Message") }
+                            }
+                        }
+                        FriendState.NONE, FriendState.DECLINED -> {
+                            Button(onClick = onAddFriend) { Text("Add friend") }
+                        }
+                        FriendState.PENDING_OUT -> {
+                            OutlinedButton(onClick = onCancelRequest) { Text("Cancel request") }
+                        }
+                        FriendState.PENDING_IN -> {
+                            Button(onClick = onAccept) { Text("Accept") }
+                            OutlinedButton(onClick = onDecline) { Text("Decline") }
+                        }
+                    }
+                }
+            }
+        }
+    )
+}
