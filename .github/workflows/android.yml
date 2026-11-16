@@ -10,6 +10,13 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    # The runner image already has an Android SDK preinstalled
+    # (ANDROID_HOME=/usr/local/lib/android/sdk). Do NOT use
+    # android-actions/setup-android: it runs `sdkmanager tools` and the
+    # `tools` package no longer exists, so it fails with exit code 1.
+    env:
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
     steps:
       - name: Check out code
         uses: actions/checkout@v4
@@ -19,9 +26,6 @@ jobs:
         with:
           java-version: '17'
           distribution: 'temurin'
-
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
