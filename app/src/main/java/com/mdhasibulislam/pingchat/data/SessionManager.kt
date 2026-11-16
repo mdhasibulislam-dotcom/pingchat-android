@@ -64,7 +64,7 @@ object SessionManager {
                 when (status) {
                     is io.github.jan.supabase.auth.status.SessionStatus.Authenticated -> {
                         _isLoggedIn.value = true
-                        onSignedIn(status.session.user)
+                        status.session.user?.let { onSignedIn(it) }
                     }
                     is io.github.jan.supabase.auth.status.SessionStatus.NotAuthenticated,
                     is io.github.jan.supabase.auth.status.SessionStatus.RefreshFailure -> {

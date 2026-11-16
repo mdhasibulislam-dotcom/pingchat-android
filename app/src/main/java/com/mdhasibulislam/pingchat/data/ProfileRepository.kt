@@ -1,7 +1,9 @@
 package com.mdhasibulislam.pingchat.data
 
 import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.storage.storage
+import io.ktor.http.ContentType
 
 /** My profile: view, edit, photo upload. Mirrors js/profile.js + js/settings.js. */
 class ProfileRepository {
@@ -45,7 +47,7 @@ class ProfileRepository {
         return try {
             val path = "$userId/${System.currentTimeMillis()}.$ext"
             client.storage.from("avatars").upload(path, bytes) {
-                contentType = contentType
+                this.contentType = ContentType.parse(contentType)
             }
             client.storage.from("avatars").publicUrl(path)
         } catch (e: Exception) {

@@ -6,6 +6,7 @@ import io.github.jan.supabase.auth.providers.Google
 import io.github.jan.supabase.auth.providers.builtin.Email
 import io.github.jan.supabase.auth.providers.builtin.IDToken
 import io.github.jan.supabase.auth.user.UserInfo
+import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.postgrest
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
@@ -97,7 +98,7 @@ class AuthRepository {
         } catch (e: Exception) {
             null
         }
-        val meta: JsonObject = user.userMetadata
+        val meta: JsonObject = user.userMetadata ?: buildJsonObject {}
         val avatar = meta["avatar_url"]?.jsonPrimitive?.contentOrNull
             ?: meta["picture"]?.jsonPrimitive?.contentOrNull
             ?: ""
