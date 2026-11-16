@@ -1,15 +1,17 @@
 package com.mdhasibulislam.pingchat.data
 
+import io.github.jan.supabase.annotations.SupabaseInternal
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
 import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Columns
 import io.github.jan.supabase.postgrest.query.Order
 import io.github.jan.supabase.realtime.PostgresAction
+import io.github.jan.supabase.realtime.broadcast
 import io.github.jan.supabase.realtime.broadcastFlow
 import io.github.jan.supabase.realtime.channel
+import io.github.jan.supabase.realtime.decodeRecord
 import io.github.jan.supabase.realtime.postgresChangeFlow
-import io.github.jan.supabase.realtime.presenceChangeFlow
 import io.github.jan.supabase.realtime.realtime
 import io.github.jan.supabase.realtime.track
 import kotlinx.coroutines.flow.Flow
@@ -86,7 +88,7 @@ class ChatRepository {
         return client.from("messages").select {
             filter { eq("conversation_id", conversationId) }
             order("created_at", Order.ASCENDING)
-            limit(limit)
+            limit(limit.toLong())
         }.decodeList<ChatMessage>()
     }
 
@@ -244,11 +246,13 @@ class ChatRepository {
     fun typingChannel(conversationId: String) =
         client.realtime.channel("typing:$conversationId")
 
+    @OptIn(SupabaseInternal::class)
     fun typingFlow(channel: io.github.jan.supabase.realtime.RealtimeChannel): Flow<TypingPayload> =
-        channel.broadcastFlow("typing")
+        channel.broadcastFlow<TypingPayload>("typing")
 
+    @OptIn(SupabaseInternal::class)
     fun typingStopFlow(channel: io.github.jan.supabase.realtime.RealtimeChannel): Flow<TypingPayload> =
-        channel.broadcastFlow("typing-stop")
+        channel.broadcastFlow<TypingPayload>("typing-stop")
 
     suspend fun sendTyping(channel: io.github.jan.supabase.realtime.RealtimeChannel, payload: TypingPayload) {
         try {
