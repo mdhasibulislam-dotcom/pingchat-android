@@ -92,6 +92,6 @@ fun PingChatTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composab
 }
 
 /** Shorthand to read PingChat colours inside a composable. */
-val PingChatColors: PingChatColors
+val pingChatColors: PingChatColors
     @Composable
     get() = LocalPingChatColors.current
