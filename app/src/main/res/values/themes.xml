@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- The Activity window theme. All in-app styling is done in Compose
+         (see ui/theme). This theme only provides a plain window behind it. -->
+    <style name="Theme.PingChat" parent="android:Theme.Material.Light.NoActionBar">
+        <item name="android:windowBackground">@android:color/white</item>
+    </style>
+</resources>
