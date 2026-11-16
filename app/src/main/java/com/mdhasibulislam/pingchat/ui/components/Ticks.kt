@@ -29,7 +29,7 @@ import androidx.compose.ui.unit.dp
 import com.mdhasibulislam.pingchat.data.Profile
 import com.mdhasibulislam.pingchat.data.TickState
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
-import com.mdhasibulislam.pingchat.ui.theme.PingChatColors
+import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 
 /**
  * Read ticks, WhatsApp-style, inside the bubble (bottom-right, small).
@@ -92,7 +92,7 @@ fun TickIcon(state: TickState, onBubble: Boolean = true, modifier: Modifier = Mo
  */
 @Composable
 fun TypingIndicator(peer: Profile?, modifier: Modifier = Modifier) {
-    val colors = PingChatColors
+    val colors = pingChatColors
     Row(
         modifier = modifier,
         verticalAlignment = Alignment.CenterVertically,
