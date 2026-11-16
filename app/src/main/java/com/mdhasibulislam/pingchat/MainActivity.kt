@@ -1,0 +1,199 @@
+package com.mdhasibulislam.pingchat
+
+import android.content.Intent
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.material3.Surface
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.lifecycle.viewmodel.compose.viewModel
+import androidx.navigation.compose.NavHost
+import androidx.navigation.compose.composable
+import androidx.navigation.compose.rememberNavController
+import com.google.android.gms.auth.api.signin.GoogleSignIn
+import com.google.android.gms.auth.api.signin.GoogleSignInClient
+import com.google.android.gms.auth.api.signin.GoogleSignInOptions
+import com.google.android.gms.common.api.ApiException
+import com.mdhasibulislam.pingchat.data.Prefs
+import com.mdhasibulislam.pingchat.data.SessionManager
+import com.mdhasibulislam.pingchat.data.Supabase
+import com.mdhasibulislam.pingchat.ui.screens.ChatScreen
+import com.mdhasibulislam.pingchat.ui.screens.ForgotPasswordScreen
+import com.mdhasibulislam.pingchat.ui.screens.LoginScreen
+import com.mdhasibulislam.pingchat.ui.screens.MainScreen
+import com.mdhasibulislam.pingchat.ui.screens.RegisterScreen
+import com.mdhasibulislam.pingchat.ui.screens.SettingsScreen
+import com.mdhasibulislam.pingchat.ui.theme.PingChatTheme
+import com.mdhasibulislam.pingchat.ui.viewmodel.AuthViewModel
+import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
+
+class MainActivity : ComponentActivity() {
+
+    private lateinit var googleSignInClient: GoogleSignInClient
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+
+        // Native Google sign-in: the Google ID token is exchanged with Supabase
+        // (signInWith(IDToken)). The OAuth Web client ID is the same one already
+        // configured for the web app in Supabase — set it in SupabaseClient.kt.
+        // Until it is set, the Google button shows a message and email login works.
+        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken(Supabase.GOOGLE_WEB_CLIENT_ID)
+            .requestEmail()
+            .build()
+        googleSignInClient = GoogleSignIn.getClient(this, gso)
+
+        setContent {
+            val prefs = remember { Prefs(applicationContext) }
+            var darkTheme by remember { mutableStateOf(prefs.darkTheme) }
+            val isLoggedIn by SessionManager.isLoggedIn.collectAsState()
+            val navController = rememberNavController()
+
+            LaunchedEffect(Unit) {
+                SessionManager.start()
+            }
+
+            // Route the user to the right screen when the session state changes.
+            LaunchedEffect(isLoggedIn) {
+                when (isLoggedIn) {
+                    true -> {
+                        if (navController.currentDestination?.route == "auth") {
+                            navController.navigate("main") {
+                                popUpTo("auth") { inclusive = true }
+                            }
+                        }
+                    }
+                    false -> {
+                        if (navController.currentDestination?.route != "auth") {
+                            navController.navigate("auth") {
+                                popUpTo(0) { inclusive = true }
+                            }
+                        }
+                    }
+                    null -> { /* still loading the saved session */ }
+                }
+            }
+
+            PingChatTheme(darkTheme = darkTheme) {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    NavHost(navController = navController, startDestination = "auth") {
+                        composable("auth") {
+                            val authViewModel: AuthViewModel = viewModel()
+                            var authScreen by remember { mutableStateOf("login") }
+                            val googleClick = {
+                                if (Supabase.GOOGLE_WEB_CLIENT_ID.startsWith("YOUR_")) {
+                                    authViewModel.googleError(
+                                        "Google sign-in is not set up yet — add the OAuth Web " +
+                                            "client ID in SupabaseClient.kt (see README), " +
+                                            "or use email login."
+                                    )
+                                } else {
+                                    val intent = googleSignInClient.signInIntent
+                                    @Suppress("DEPRECATION")
+                                    startActivityForResult(intent, RC_GOOGLE_SIGN_IN)
+                                }
+                            }
+                            // Google sign-in result hand-off from onActivityResult.
+                            LaunchedEffect(Unit) {
+                                AuthViewModel.pendingGoogleToken.collect { token ->
+                                    if (token != null) {
+                                        AuthViewModel.pendingGoogleToken.value = null
+                                        authViewModel.googleSignIn(token)
+                                    }
+                                }
+                            }
+                            LaunchedEffect(Unit) {
+                                AuthViewModel.pendingGoogleError.collect { message ->
+                                    if (message != null) {
+                                        AuthViewModel.pendingGoogleError.value = null
+                                        authViewModel.googleError(message)
+                                    }
+                                }
+                            }
+                            when (authScreen) {
+                                "register" -> RegisterScreen(
+                                    viewModel = authViewModel,
+                                    onGoogleClick = googleClick,
+                                    onLoginClick = { authScreen = "login" }
+                                )
+                                "forgot" -> ForgotPasswordScreen(
+                                    viewModel = authViewModel,
+                                    onBackToLogin = { authScreen = "login" }
+                                )
+                                else -> LoginScreen(
+                                    viewModel = authViewModel,
+                                    onGoogleClick = googleClick,
+                                    onRegisterClick = { authScreen = "register" },
+                                    onForgotClick = { authScreen = "forgot" }
+                                )
+                            }
+                        }
+                        composable("main") {
+                            MainScreen(
+                                onOpenChat = { id -> navController.navigate("chat/$id") },
+                                onSettingsClick = { navController.navigate("settings") },
+                                darkTheme = darkTheme,
+                                onDarkThemeChange = { enabled ->
+                                    darkTheme = enabled
+                                    prefs.darkTheme = enabled
+                                }
+                            )
+                        }
+                        composable("settings") {
+                            val profileViewModel: ProfileViewModel = viewModel()
+                            SettingsScreen(
+                                viewModel = profileViewModel,
+                                prefs = prefs,
+                                darkTheme = darkTheme,
+                                onDarkThemeChange = { enabled ->
+                                    darkTheme = enabled
+                                    prefs.darkTheme = enabled
+                                }
+                            )
+                        }
+                        composable("chat/{conversationId}") { backStackEntry ->
+                            val conversationId =
+                                backStackEntry.arguments?.getString("conversationId") ?: ""
+                            ChatScreen(
+                                conversationId = conversationId,
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    @Deprecated("Used for the Google sign-in result (kept simple for Phase 1).")
+    override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
+        super.onActivityResult(requestCode, resultCode, data)
+        if (requestCode != RC_GOOGLE_SIGN_IN) return
+        try {
+            val task = GoogleSignIn.getSignedInAccountFromIntent(data)
+            val account = task.getResult(ApiException::class.java)
+            val idToken = account?.idToken
+            if (idToken != null) {
+                AuthViewModel.pendingGoogleToken.value = idToken
+            } else {
+                AuthViewModel.pendingGoogleError.value =
+                    "Google did not return an ID token. Try again or use email login."
+            }
+        } catch (e: Exception) {
+            AuthViewModel.pendingGoogleError.value =
+                "Google sign-in failed: ${e.localizedMessage ?: "unknown error"}"
+        }
+    }
+
+    companion object {
+        private const val RC_GOOGLE_SIGN_IN = 9001
+    }
+}
