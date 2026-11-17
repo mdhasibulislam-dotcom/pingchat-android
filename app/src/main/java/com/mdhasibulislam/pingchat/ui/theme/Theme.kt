@@ -23,7 +23,8 @@ data class PingChatColors(
     val inputBg: Color,
     val bubbleMe: Color,
     val bubbleMeText: Color,
-    val bubbleThem: Color
+    val bubbleThem: Color,
+    val chatBg: Color
 )
 
 private val LightPingChatColors = PingChatColors(
@@ -37,9 +38,10 @@ private val LightPingChatColors = PingChatColors(
     primarySoft = EmeraldSoft,
     dangerSoft = LightDangerSoft,
     inputBg = LightInputBg,
-    bubbleMe = Emerald,
-    bubbleMeText = Color.White,
-    bubbleThem = LightBubbleThem
+    bubbleMe = WhatsAppOutgoingLight,
+    bubbleMeText = Color(0xFF111B21),
+    bubbleThem = WhatsAppIncomingLight,
+    chatBg = WhatsAppChatBgLight
 )
 
 private val DarkPingChatColors = PingChatColors(
@@ -53,9 +55,10 @@ private val DarkPingChatColors = PingChatColors(
     primarySoft = DarkPrimarySoft,
     dangerSoft = DarkDangerSoft,
     inputBg = DarkInputBg,
-    bubbleMe = Emerald,
+    bubbleMe = WhatsAppOutgoingDark,
     bubbleMeText = Color.White,
-    bubbleThem = DarkBubbleThem
+    bubbleThem = WhatsAppIncomingDark,
+    chatBg = WhatsAppChatBgDark
 )
 
 val LocalPingChatColors = staticCompositionLocalOf { LightPingChatColors }

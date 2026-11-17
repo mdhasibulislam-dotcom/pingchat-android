@@ -33,6 +33,18 @@ val DarkInputBg = Color(0xFF0F172A)
 val DarkBubbleThem = Color(0xFF1E293B)
 val DarkPrimarySoft = Color(0xFF064E3B)
 
+// WhatsApp chat-screen colours (chat screen only).
+val WhatsAppOutgoingDark = Color(0xFF005C4B)
+val WhatsAppIncomingDark = Color(0xFF202C33)
+val WhatsAppOutgoingLight = Color(0xFFD9FDD3)
+val WhatsAppIncomingLight = Color(0xFFFFFFFF)
+val WhatsAppChatBgDark = Color(0xFF0B141A)
+val WhatsAppChatBgLight = Color(0xFFEFEBE2)
+val WhatsAppTickGrey = Color(0xFF8696A0)
+val WhatsAppTickBlue = Color(0xFF53BDEB)
+val WhatsAppNoticeBgDark = Color(0xFF182229)
+val WhatsAppNoticeBgLight = Color(0xFFFDF3C6)
+
 // Avatar fallback colours (same list + hash as the web app's colorFor()).
 val AvatarColors = listOf(
     Color(0xFF059669), Color(0xFF0D9488), Color(0xFF0891B2), Color(0xFF0284C7),
