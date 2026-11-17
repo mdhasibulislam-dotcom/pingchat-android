@@ -48,21 +48,13 @@ class PeopleViewModel : ViewModel() {
     init {
         refresh()
         viewModelScope.launch {
-            val channel = repo.friendshipsFeedChannel()
-            launch {
-                try {
-                    repo.friendshipsChangeFlow(channel).collect {
-                        delay(300)
-                        refresh()
-                    }
-                } catch (e: Exception) {
-                    // live badge is best-effort
-                }
-            }
             try {
-                channel.subscribe()
+                repo.friendshipsFlow().collect {
+                    delay(300)
+                    refresh()
+                }
             } catch (e: Exception) {
-                // offline
+                // live badge is best-effort
             }
         }
     }
@@ -77,7 +69,7 @@ class PeopleViewModel : ViewModel() {
                 _requests.value = repo.loadIncomingRequests()
                 _friends.value = repo.loadFriends()
                 _error.value = null
-                // Friendship state per person (parallel RPCs).
+                // Friendship state per person (parallel queries).
                 val statuses = all.map { user ->
                     async { user.id to repo.friendshipStatus(user.id) }
                 }.awaitAll().toMap()

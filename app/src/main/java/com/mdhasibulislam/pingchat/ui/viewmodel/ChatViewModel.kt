@@ -13,7 +13,6 @@ import com.mdhasibulislam.pingchat.data.Reaction
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.TickState
 import com.mdhasibulislam.pingchat.data.TypingPayload
-import io.github.jan.supabase.realtime.RealtimeChannel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -85,8 +84,6 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         _deliveredIds.update { it + ids }
     }
 
-    private var roomChannel: RealtimeChannel? = null
-    private var typingChannel: RealtimeChannel? = null
     private var typingHideJob: Job? = null
     private var typingDebounceJob: Job? = null
     private var typingLastSentAt = 0L
@@ -107,8 +104,8 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
             _peer.value = peerProfile
             _peerLastReadAt.value = peerRead
             loadMessages()
-            startRoomChannel()
-            startTypingChannel()
+            startPeerReadFlow()
+            startTypingFlows()
         }
         viewModelScope.launch {
             SessionManager.feedTick.collect {
@@ -131,7 +128,7 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
                 val list = repo.loadMessages(conversationId)
                 _messages.value = list
                 val ids = list.map { it.id }
-                _reactions.value = repo.loadReactions(ids)
+                _reactions.value = repo.loadReactions(conversationId, ids)
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
             }
@@ -302,8 +299,8 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
 
     /**
      * View-once consume: the recipient opening a photo or finishing a
-     * voice message deletes the row from the database (via the RPC,
-     * which refuses the sender / already-consumed / non-participant).
+     * voice message deletes the message doc + storage file (the repo
+     * refuses the sender / already-consumed / non-participant).
      * Never consumes my own sent media.
      */
     fun consumeViewOnce(message: ChatMessage) {
@@ -311,7 +308,7 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         if (message.senderId == myId) return
         if (!consumedIds.add(message.id)) return
         viewModelScope.launch {
-            if (repo.consumeMessage(message.id)) {
+            if (repo.consumeMessage(conversationId, message.id)) {
                 _messages.update { list -> list.filterNot { it.id == message.id } }
                 val path = message.mediaPath
                 if (path != null) {
@@ -328,8 +325,8 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     fun toggleReaction(messageId: String, emoji: String) {
         viewModelScope.launch {
             try {
-                repo.toggleReaction(messageId, emoji)
-                _reactions.value = repo.loadReactions(_messages.value.map { it.id })
+                repo.toggleReaction(conversationId, messageId, emoji)
+                _reactions.value = repo.loadReactions(conversationId, _messages.value.map { it.id })
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
             }
@@ -338,7 +335,7 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
 
     fun deleteForMe(messageId: String) {
         viewModelScope.launch {
-            if (repo.deleteForMe(messageId)) {
+            if (repo.deleteForMe(conversationId, messageId)) {
                 _messages.update { list -> list.filterNot { it.id == messageId } }
             }
         }
@@ -347,7 +344,7 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     fun deleteForEveryone(messageId: String) {
         viewModelScope.launch {
             try {
-                repo.deleteForEveryone(messageId)
+                repo.deleteForEveryone(conversationId, messageId)
                 _messages.update { list -> list.filterNot { it.id == messageId } }
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
@@ -383,7 +380,6 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     // ---------- typing (debounced 300ms + throttled 2.5s, like the web app) ----------
 
     fun onTyping() {
-        val channel = typingChannel ?: return
         typingDebounceJob?.cancel()
         typingDebounceJob = viewModelScope.launch {
             delay(300)
@@ -392,17 +388,16 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
             typingLastSentAt = now
             val me = repo.myId() ?: return@launch
             val name = SessionManager.profile.value?.fullName ?: "Someone"
-            repo.sendTyping(channel, TypingPayload(me, name))
+            repo.sendTyping(conversationId, TypingPayload(me, name))
         }
     }
 
     fun onTypingStopped() {
         typingDebounceJob?.cancel()
         typingLastSentAt = 0
-        val channel = typingChannel ?: return
         val me = repo.myId() ?: return
         viewModelScope.launch {
-            repo.sendTypingStop(channel, TypingPayload(me))
+            repo.sendTypingStop(conversationId, TypingPayload(me))
         }
     }
 
@@ -413,33 +408,24 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         }
     }
 
-    private fun startRoomChannel() {
-        val channel = repo.roomChannel(conversationId)
-        roomChannel = channel
+    /** Live peer read-marker for this conversation (drives the seen badge). */
+    private fun startPeerReadFlow() {
         viewModelScope.launch {
             try {
-                repo.peerReadFlow(channel, conversationId).collect { lastRead ->
+                repo.peerReadFlow(conversationId).collect { lastRead ->
                     _peerLastReadAt.value = lastRead
                 }
             } catch (e: Exception) {
                 // read markers are best-effort
             }
         }
-        viewModelScope.launch {
-            try {
-                channel.subscribe()
-            } catch (e: Exception) {
-                // offline
-            }
-        }
     }
 
-    private fun startTypingChannel() {
-        val channel = repo.typingChannel(conversationId)
-        typingChannel = channel
+    /** Live typing indicator from the peer (Firestore typing doc). */
+    private fun startTypingFlows() {
         viewModelScope.launch {
             try {
-                repo.typingFlow(channel).collect { payload ->
+                repo.typingFlow(conversationId).collect { payload ->
                     if (payload.userId == repo.myId()) return@collect
                     _typingPeer.value = true
                     typingHideJob?.cancel()
@@ -454,20 +440,13 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         }
         viewModelScope.launch {
             try {
-                repo.typingStopFlow(channel).collect { payload ->
+                repo.typingStopFlow(conversationId).collect { payload ->
                     if (payload.userId == repo.myId()) return@collect
                     typingHideJob?.cancel()
                     _typingPeer.value = false
                 }
             } catch (e: Exception) {
                 // typing is best-effort
-            }
-        }
-        viewModelScope.launch {
-            try {
-                channel.subscribe()
-            } catch (e: Exception) {
-                // offline
             }
         }
     }
@@ -480,20 +459,6 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         }
         recorder = null
         stopPlayback()
-        val room = roomChannel
-        val typing = typingChannel
-        roomChannel = null
-        typingChannel = null
-        viewModelScope.launch {
-            try {
-                room?.unsubscribe()
-            } catch (e: Exception) {
-            }
-            try {
-                typing?.unsubscribe()
-            } catch (e: Exception) {
-            }
-        }
         super.onCleared()
     }
 }

@@ -118,23 +118,16 @@ class AuthViewModel : ViewModel() {
                 _state.update { it.copy(loading = false, error = "That username is already taken.") }
                 return@launch
             }
-            val signedInImmediately = try {
+            try {
                 repo.signUp(name.trim(), uname, email.trim(), password)
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = AuthRepository.friendlyError(e)) }
                 return@launch
             }
-            if (signedInImmediately) {
-                _state.update { it.copy(loading = false) }
-            } else {
-                _state.update {
-                    it.copy(
-                        loading = false,
-                        needsConfirmation = true,
-                        info = "Account created! Check your email and click the confirmation link, then log in."
-                    )
-                }
-            }
+            // Firebase signs the new user in immediately — no confirmation
+            // link step. SessionManager picks up the session and routes
+            // to chats.
+            _state.update { it.copy(loading = false) }
         }
     }
 
