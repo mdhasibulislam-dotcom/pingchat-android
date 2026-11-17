@@ -37,6 +37,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -44,7 +45,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.mdhasibulislam.pingchat.data.Supabase
+import com.mdhasibulislam.pingchat.data.FirebaseConfig
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.AuthViewModel
@@ -219,10 +220,10 @@ fun LoginScreen(
             Text("No account yet?", style = MaterialTheme.typography.bodyMedium)
             TextButton(onClick = onRegisterClick) { Text("Register") }
         }
-        if (Supabase.GOOGLE_WEB_CLIENT_ID == "YOUR_GOOGLE_WEB_CLIENT_ID") {
+        if (FirebaseConfig.googleWebClientId(LocalContext.current) == null) {
             Spacer(Modifier.height(12.dp))
             Text(
-                "Google sign-in needs the Web client ID (see README). Email login works now.",
+                "Google sign-in is not turned on yet (enable Google in the Firebase console — see README). Email login works now.",
                 style = MaterialTheme.typography.bodySmall,
                 color = pingChatColors.muted,
                 textAlign = TextAlign.Center

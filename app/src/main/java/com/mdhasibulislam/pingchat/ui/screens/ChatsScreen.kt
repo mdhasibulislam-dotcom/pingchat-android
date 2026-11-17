@@ -55,7 +55,7 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val onlineIds by SessionManager.onlineIds.collectAsState()
-    val myId = SessionManager.user.collectAsState().value?.id
+    val myId = SessionManager.user.collectAsState().value?.uid
     val colors = pingChatColors
     var query by remember { mutableStateOf("") }
     // 0 = Chat (all conversations), 1 = Active (online people only).
