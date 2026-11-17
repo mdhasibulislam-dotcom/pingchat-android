@@ -87,8 +87,8 @@ class ChatViewModelFactory(private val conversationId: String) : ViewModelProvid
 }
 
 private sealed interface ChatListItem {
-    data class Day(val text: String) : ChatListItem
-    data class Gap(val text: String) : ChatListItem
+    data class Day(val text: String, val anchorId: String) : ChatListItem
+    data class Gap(val text: String, val anchorId: String) : ChatListItem
     data class Msg(val message: ChatMessage) : ChatListItem
 }
 
@@ -98,9 +98,9 @@ private fun buildDisplayItems(messages: List<ChatMessage>): List<ChatListItem> {
     for (m in messages) {
         val p = prev
         if (p == null || !TimeFormat.isSameDay(p.createdAt, m.createdAt)) {
-            out += ChatListItem.Day(TimeFormat.dayLabel(m.createdAt))
+            out += ChatListItem.Day(TimeFormat.dayLabel(m.createdAt), m.id)
         } else if (TimeFormat.minutesBetween(p.createdAt, m.createdAt) >= 20) {
-            out += ChatListItem.Gap(TimeFormat.fmtTime(m.createdAt))
+            out += ChatListItem.Gap(TimeFormat.fmtTime(m.createdAt), m.id)
         }
         out += ChatListItem.Msg(m)
         prev = m
@@ -255,8 +255,12 @@ fun ChatScreen(
             }
             items(displayItems, key = {
                 when (it) {
-                    is ChatListItem.Day -> "day-${it.text}-${messages.size}"
-                    is ChatListItem.Gap -> "gap-${it.text}"
+                    // Anchor each label to the message that follows it: two labels
+                    // can have the same text (e.g. an empty label when the date
+                    // is missing, or the same clock time on different days), and
+                    // duplicate keys crash the list. Message ids are unique.
+                    is ChatListItem.Day -> "day-${it.anchorId}"
+                    is ChatListItem.Gap -> "gap-${it.anchorId}"
                     is ChatListItem.Msg -> it.message.id
                 }
             }) { item ->
