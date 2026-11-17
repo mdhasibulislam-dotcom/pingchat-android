@@ -38,6 +38,12 @@ class ProfileViewModel : ViewModel() {
     private val _chatsCount = MutableStateFlow(0)
     val chatsCount: StateFlow<Int> = _chatsCount.asStateFlow()
 
+    private val _photosSent = MutableStateFlow(0)
+    val photosSent: StateFlow<Int> = _photosSent.asStateFlow()
+
+    private val _voiceSent = MutableStateFlow(0)
+    val voiceSent: StateFlow<Int> = _voiceSent.asStateFlow()
+
     init {
         loadStats()
     }
@@ -50,7 +56,27 @@ class ProfileViewModel : ViewModel() {
                 // stats are best-effort
             }
             try {
-                _chatsCount.value = ChatRepository().loadConversations().size
+                val chatRepo = ChatRepository()
+                val convs = chatRepo.loadConversations()
+                _chatsCount.value = convs.size
+                // Media shared: photos + voice messages I sent, across chats.
+                var photos = 0
+                var voice = 0
+                val me = repo.myId()
+                for (item in convs) {
+                    try {
+                        for (m in chatRepo.loadMessages(item.conversation.id)) {
+                            if (m.senderId == me) {
+                                if (m.kind == "photo") photos++
+                                if (m.kind == "voice") voice++
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // one chat's messages are best-effort
+                    }
+                }
+                _photosSent.value = photos
+                _voiceSent.value = voice
             } catch (e: Exception) {
                 // stats are best-effort
             }
@@ -62,7 +88,7 @@ class ProfileViewModel : ViewModel() {
         _info.value = null
     }
 
-    fun saveProfile(fullName: String, bio: String, isPublic: Boolean) {
+    fun saveProfile(fullName: String, bio: String, phone: String, isPublic: Boolean) {
         val me = repo.myId() ?: return
         if (fullName.trim().length < 2) {
             _error.value = "Enter your full name."
@@ -71,7 +97,7 @@ class ProfileViewModel : ViewModel() {
         viewModelScope.launch {
             _saving.value = true
             val updated = try {
-                repo.updateProfile(me, fullName.trim(), bio.trim().ifBlank { null }, isPublic)
+                repo.updateProfile(me, fullName.trim(), bio.trim().ifBlank { null }, phone.trim().ifBlank { null }, isPublic)
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
                 null
