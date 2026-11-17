@@ -11,6 +11,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +22,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBarsPadding
@@ -37,15 +39,15 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
-import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Stop
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
@@ -92,7 +94,6 @@ import coil.compose.AsyncImage
 import java.io.File
 import com.mdhasibulislam.pingchat.data.ChatMessage
 import com.mdhasibulislam.pingchat.data.FriendState
-import com.mdhasibulislam.pingchat.data.Profile
 import com.mdhasibulislam.pingchat.data.Reaction
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.TickState
@@ -102,6 +103,10 @@ import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.components.TickIcon
 import com.mdhasibulislam.pingchat.ui.components.TypingIndicator
+import com.mdhasibulislam.pingchat.ui.theme.Emerald
+import com.mdhasibulislam.pingchat.ui.theme.WhatsAppNoticeBgDark
+import com.mdhasibulislam.pingchat.ui.theme.WhatsAppNoticeBgLight
+import com.mdhasibulislam.pingchat.ui.theme.WhatsAppTickGrey
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.CallViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ChatViewModel
@@ -121,19 +126,16 @@ private sealed interface ChatListItem {
 }
 
 private fun buildDisplayItems(messages: List<ChatMessage>): List<ChatListItem> {
+    // WhatsApp-style: only a day pill ("Today" / "Yesterday" / "18 Nov")
+    // when the day changes. No time pills between messages — the time
+    // lives inside each bubble, bottom-right.
     val out = mutableListOf<ChatListItem>()
     var prev: ChatMessage? = null
     for (m in messages) {
         val p = prev
         if (p == null || !TimeFormat.isSameDay(p.createdAt, m.createdAt)) {
-            // Never emit a blank day label (a message with an unparseable
-            // date used to render as an empty grey pill in the middle
-            // of the chat).
-            val label = TimeFormat.dayLabel(m.createdAt)
+            val label = TimeFormat.dayLabelWhatsApp(m.createdAt)
             if (label.isNotBlank()) out += ChatListItem.Day(label, m.id)
-        } else if (TimeFormat.minutesBetween(p.createdAt, m.createdAt) >= 20) {
-            val label = TimeFormat.fmtTime(m.createdAt)
-            if (label.isNotBlank()) out += ChatListItem.Gap(label, m.id)
         }
         out += ChatListItem.Msg(m)
         prev = m
@@ -295,9 +297,13 @@ fun ChatScreen(
         if (messages.isNotEmpty()) listState.scrollToItem(0)
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        // Header, Messenger-style: back, avatar + name + status,
-        // audio call, video call, info (profile). statusBarsPadding keeps
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colors.chatBg)
+    ) {
+        // Header, WhatsApp-style: back, avatar + name + status,
+        // video call, audio call, more (profile). statusBarsPadding keeps
         // the header below the system status bar (targetSdk 37 is
         // edge-to-edge, so content otherwise draws under the clock/battery).
         Row(
@@ -327,14 +333,14 @@ fun ChatScreen(
                     color = if (peerOnline) colors.text else colors.muted
                 )
             }
-            IconButton(onClick = { requestCall("audio") }) {
-                Icon(Icons.Default.Phone, contentDescription = "Audio call", tint = colors.text)
-            }
             IconButton(onClick = { requestCall("video") }) {
                 Icon(Icons.Default.Videocam, contentDescription = "Video call", tint = colors.text)
             }
+            IconButton(onClick = { requestCall("audio") }) {
+                Icon(Icons.Default.Phone, contentDescription = "Audio call", tint = colors.text)
+            }
             IconButton(onClick = { showProfile = true }) {
-                Icon(Icons.Default.Info, contentDescription = "Chat info", tint = colors.text)
+                Icon(Icons.Default.MoreVert, contentDescription = "More", tint = colors.text)
             }
         }
 
@@ -405,16 +411,9 @@ fun ChatScreen(
                     }
                 }
             }
-            // Messenger-style intro card at the very top of the chat.
-            val introPeer = peer
-            if (introPeer != null) {
-                item(key = "intro-${introPeer.id}") {
-                    ChatIntroCard(
-                        peer = introPeer,
-                        online = peerOnline,
-                        onViewProfile = { showProfile = true }
-                    )
-                }
+            // WhatsApp-style encryption notice at the very top of the chat.
+            item(key = "e2e-notice") {
+                EncryptionNotice()
             }
         }
 
@@ -457,8 +456,8 @@ fun ChatScreen(
             }
         }
 
-        // Composer, Messenger-style: [+] attach (gallery photo only),
-        // mic to record, pill-shaped grey text field, send when typing.
+        // Composer, WhatsApp-style: pill-shaped field (attach inside it),
+        // mic when empty, green send circle when typing.
         // imePadding lifts the composer with the keyboard (the manifest
         // already uses adjustResize); navigationBarsPadding keeps it above
         // the system gesture bar when the keyboard is closed.
@@ -471,9 +470,6 @@ fun ChatScreen(
                 .padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            IconButton(onClick = { photoPicker.launch("image/*") }) {
-                Icon(Icons.Default.Add, contentDescription = "Send a photo", tint = colors.text)
-            }
             if (recording) {
                 // Recording in progress: red dot + timer; tap stop to send.
                 Row(
@@ -502,13 +498,6 @@ fun ChatScreen(
                     Icon(Icons.Default.Stop, contentDescription = "Stop and send", tint = Color.Red)
                 }
             } else {
-                IconButton(onClick = { requestMicAndRecord() }) {
-                    Icon(
-                        Icons.Default.Mic,
-                        contentDescription = "Record a voice message",
-                        tint = colors.text
-                    )
-                }
                 TextField(
                     value = input,
                     onValueChange = {
@@ -528,26 +517,48 @@ fun ChatScreen(
                         unfocusedIndicatorColor = Color.Transparent,
                         disabledIndicatorColor = Color.Transparent
                     ),
+                    trailingIcon = {
+                        IconButton(onClick = { photoPicker.launch("image/*") }) {
+                            Icon(Icons.Default.Add, contentDescription = "Send a photo", tint = colors.muted)
+                        }
+                    },
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(Modifier.width(8.dp))
                 if (input.isNotBlank()) {
-                    IconButton(
-                        onClick = {
-                            viewModel.send(input)
-                            input = ""
-                        },
-                        enabled = !sending
+                    // Green send circle (WhatsApp-style).
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .clip(CircleShape)
+                            .background(Emerald)
+                            .clickable(enabled = !sending) {
+                                viewModel.send(input)
+                                input = ""
+                            },
+                        contentAlignment = Alignment.Center
                     ) {
                         if (sending) {
-                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(20.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White
+                            )
                         } else {
                             Icon(
                                 Icons.AutoMirrored.Filled.Send,
                                 contentDescription = "Send",
-                                tint = colors.text
+                                tint = Color.White
                             )
                         }
+                    }
+                } else {
+                    IconButton(onClick = { requestMicAndRecord() }) {
+                        Icon(
+                            Icons.Default.Mic,
+                            contentDescription = "Record a voice message",
+                            tint = colors.text
+                        )
                     }
                 }
             }
@@ -667,37 +678,37 @@ fun ChatScreen(
 /** Short preview text for a replied-to message (photo/voice have no body). */
 private fun replyPreview(message: ChatMessage): String = messageDisplayText(message)
 
-/** Messenger-style intro card at the top of a chat: big photo, name, @username. */
+/** WhatsApp-style encryption notice at the top of a chat. */
 @Composable
-private fun ChatIntroCard(peer: Profile, online: Boolean, onViewProfile: () -> Unit) {
+private fun EncryptionNotice() {
     val colors = pingChatColors
-    Column(
+    Box(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally
+            .padding(vertical = 8.dp),
+        contentAlignment = Alignment.Center
     ) {
-        Avatar(profile = peer, size = AvatarSize.LG, online = online)
-        Spacer(Modifier.height(12.dp))
-        Text(
-            text = peer.fullName.ifBlank { peer.username },
-            style = MaterialTheme.typography.titleLarge,
-            color = colors.text
-        )
-        Text(
-            text = "@${peer.username}",
-            style = MaterialTheme.typography.bodyMedium,
-            color = colors.muted
-        )
-        Spacer(Modifier.height(4.dp))
-        Text(
-            text = "You're friends on PingChat",
-            style = MaterialTheme.typography.bodySmall,
-            color = colors.muted
-        )
-        Spacer(Modifier.height(12.dp))
-        Button(onClick = onViewProfile) {
-            Text("View profile")
+        Row(
+            modifier = Modifier
+                .widthIn(max = 300.dp)
+                .clip(RoundedCornerShape(8.dp))
+                .background(if (isSystemInDarkTheme()) WhatsAppNoticeBgDark else WhatsAppNoticeBgLight)
+                .padding(horizontal = 12.dp, vertical = 6.dp),
+            horizontalArrangement = Arrangement.spacedBy(6.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Icon(
+                Icons.Default.Lock,
+                contentDescription = null,
+                tint = colors.muted,
+                modifier = Modifier.size(12.dp)
+            )
+            Text(
+                text = "Messages are end-to-end encrypted. No one outside of this chat, not even PingChat, can read or listen to them.",
+                style = MaterialTheme.typography.bodySmall,
+                color = colors.muted,
+                fontSize = 11.sp
+            )
         }
     }
 }
@@ -738,137 +749,186 @@ private fun MessageBubble(
     voiceDurationSec: Int?
 ) {
     val colors = pingChatColors
+    // WhatsApp bubble: one sharp corner on the side it points to (the tail).
+    val bubbleShape = if (mine) {
+        RoundedCornerShape(topStart = 16.dp, topEnd = 2.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
+    } else {
+        RoundedCornerShape(topStart = 2.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
+    }
+    val timeText = TimeFormat.fmtTime(message.createdAt)
     Column(
-        modifier = Modifier.fillMaxWidth(),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(bottom = if (reactions.isNotEmpty()) 12.dp else 0.dp),
         horizontalAlignment = if (mine) Alignment.End else Alignment.Start
     ) {
-        Box(
-            modifier = Modifier
-                .widthIn(max = 300.dp)
-                .clip(RoundedCornerShape(16.dp))
-                .background(if (mine) colors.bubbleMe else colors.bubbleThem)
-                .then(
-                    if (mine) Modifier
-                    else Modifier.border(1.dp, colors.border, RoundedCornerShape(16.dp))
-                )
-                // Tap a photo bubble to view it fullscreen; long-press
-                // still opens the menu (React / Reply / Delete).
-                .combinedClickable(
-                    onClick = { if (message.kind == "photo") onPhotoClick(message) },
-                    onLongClick = onLongPress
-                )
-                .padding(horizontal = 12.dp, vertical = 8.dp)
-        ) {
-            Column {
-                if (replyTo != null) {
-                    Column(
-                        modifier = Modifier
-                            .clip(RoundedCornerShape(8.dp))
-                            .background(
-                                if (mine) Color.White.copy(alpha = 0.18f) else colors.card2
-                            )
-                            .padding(horizontal = 8.dp, vertical = 4.dp)
-                    ) {
-                        Text(
-                            text = replyPreview(replyTo),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = if (mine) Color.White.copy(alpha = 0.9f) else colors.muted,
-                            maxLines = 2,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    Spacer(Modifier.height(4.dp))
-                }
-                when (message.kind) {
-                    "photo" -> {
-                        if (!message.mediaUrl.isNullOrBlank()) {
-                            AsyncImage(
-                                model = message.mediaUrl,
-                                contentDescription = "Photo",
-                                modifier = Modifier
-                                    .widthIn(max = 240.dp)
-                                    .height(180.dp)
-                                    .clip(RoundedCornerShape(12.dp)),
-                                contentScale = ContentScale.Crop
-                            )
-                        } else {
+        // Outer box so the reaction pill can overlap the bubble's corner.
+        Box(modifier = Modifier.widthIn(max = 300.dp)) {
+            Box(
+                modifier = Modifier
+                    .clip(bubbleShape)
+                    .background(if (mine) colors.bubbleMe else colors.bubbleThem)
+                    .then(
+                        if (mine) Modifier
+                        else Modifier.border(1.dp, colors.border, bubbleShape)
+                    )
+                    // Tap a photo bubble to view it fullscreen; long-press
+                    // still opens the menu (React / Reply / Delete).
+                    .combinedClickable(
+                        onClick = { if (message.kind == "photo") onPhotoClick(message) },
+                        onLongClick = onLongPress
+                    )
+                    .padding(start = 12.dp, end = 8.dp, top = 6.dp, bottom = 6.dp)
+            ) {
+                Column {
+                    if (replyTo != null) {
+                        Column(
+                            modifier = Modifier
+                                .clip(RoundedCornerShape(8.dp))
+                                .background(
+                                    if (mine) Color.White.copy(alpha = 0.18f) else colors.card2
+                                )
+                                .padding(horizontal = 8.dp, vertical = 4.dp)
+                        ) {
                             Text(
-                                text = "Photo",
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (mine) Color.White else colors.text
+                                text = replyPreview(replyTo),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = if (mine) colors.bubbleMeText.copy(alpha = 0.9f) else colors.muted,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis
                             )
                         }
-                        if (mine && tickState != null) {
-                            Spacer(Modifier.height(4.dp))
-                            Row(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalArrangement = Arrangement.End
-                            ) {
-                                TickIcon(state = tickState, onBubble = true)
-                            }
-                        }
+                        Spacer(Modifier.height(4.dp))
                     }
-                    "voice" -> {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            IconButton(
-                                onClick = { onVoiceClick(message) },
-                                modifier = Modifier.size(36.dp)
-                            ) {
-                                Icon(
-                                    if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                    contentDescription = if (playing) "Stop" else "Play voice message",
-                                    tint = if (mine) Color.White else colors.text
+                    when (message.kind) {
+                        "photo" -> {
+                            if (!message.mediaUrl.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = message.mediaUrl,
+                                    contentDescription = "Photo",
+                                    modifier = Modifier
+                                        .widthIn(max = 240.dp)
+                                        .height(180.dp)
+                                        .clip(RoundedCornerShape(12.dp)),
+                                    contentScale = ContentScale.Crop
+                                )
+                            } else {
+                                Text(
+                                    text = "Photo",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (mine) colors.bubbleMeText else colors.text
                                 )
                             }
-                            Text(
-                                text = "Voice message" + if (voiceDurationSec != null) {
-                                    " • ${voiceDurationSec / 60}:${(voiceDurationSec % 60).toString().padStart(2, '0')}"
-                                } else {
-                                    ""
-                                },
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (mine) Color.White else colors.text,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            if (mine && tickState != null) {
+                            Spacer(Modifier.height(4.dp))
+                            MetaRow(timeText = timeText, tickState = tickState, mine = mine)
+                        }
+                        "voice" -> {
+                            Row(verticalAlignment = Alignment.CenterVertically) {
+                                IconButton(
+                                    onClick = { onVoiceClick(message) },
+                                    modifier = Modifier.size(36.dp)
+                                ) {
+                                    Icon(
+                                        if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                        contentDescription = if (playing) "Stop" else "Play voice message",
+                                        tint = if (mine) colors.bubbleMeText else colors.text
+                                    )
+                                }
+                                Text(
+                                    text = "Voice message" + if (voiceDurationSec != null) {
+                                        " • ${voiceDurationSec / 60}:${(voiceDurationSec % 60).toString().padStart(2, '0')}"
+                                    } else {
+                                        ""
+                                    },
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (mine) colors.bubbleMeText else colors.text,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
                                 Spacer(Modifier.width(6.dp))
-                                TickIcon(state = tickState, onBubble = true)
+                                Text(
+                                    text = timeText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 11.sp,
+                                    color = WhatsAppTickGrey
+                                )
+                                if (mine && tickState != null) {
+                                    Spacer(Modifier.width(2.dp))
+                                    TickIcon(state = tickState, onBubble = true)
+                                }
+                            }
+                        }
+                        else -> {
+                            // Text + time + ticks on one line, WhatsApp-style:
+                            // the meta sits at the end of the last line.
+                            Row(verticalAlignment = Alignment.Bottom) {
+                                Text(
+                                    // Never render an empty bubble: a text-kind
+                                    // row with a blank body falls back to
+                                    // "Voice message" / "Photo" / "Message".
+                                    text = messageDisplayText(message),
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = if (mine) colors.bubbleMeText else colors.text,
+                                    modifier = Modifier.weight(1f, fill = false)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text(
+                                    text = timeText,
+                                    style = MaterialTheme.typography.bodySmall,
+                                    fontSize = 11.sp,
+                                    color = WhatsAppTickGrey
+                                )
+                                if (mine && tickState != null) {
+                                    Spacer(Modifier.width(2.dp))
+                                    TickIcon(state = tickState, onBubble = true)
+                                }
                             }
                         }
                     }
-                    else -> {
-                        Row(verticalAlignment = Alignment.Bottom) {
-                            Text(
-                                // Never render an empty bubble: a text-kind
-                                // row with a blank body falls back to
-                                // "Voice message" / "Photo" / "Message".
-                                text = messageDisplayText(message),
-                                style = MaterialTheme.typography.bodyMedium,
-                                color = if (mine) Color.White else colors.text,
-                                modifier = Modifier.weight(1f, fill = false)
-                            )
-                            if (mine && tickState != null) {
-                                Spacer(Modifier.width(6.dp))
-                                TickIcon(state = tickState, onBubble = true)
-                            }
-                        }
+                }
+            }
+            if (reactions.isNotEmpty()) {
+                // Reaction pill overlapping the bubble's bottom corner.
+                Row(
+                    modifier = Modifier
+                        .align(if (mine) Alignment.BottomEnd else Alignment.BottomStart)
+                        .offset(y = 10.dp)
+                        .clip(RoundedCornerShape(999.dp))
+                        .background(colors.card2)
+                        .border(1.dp, colors.border, RoundedCornerShape(999.dp))
+                        .padding(horizontal = 6.dp, vertical = 2.dp),
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    reactions.groupBy { it.emoji }.forEach { (emoji, list) ->
+                        Text(
+                            "$emoji ${list.size}",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.text,
+                            modifier = Modifier.clickable { onReactionChipClick(emoji) }
+                        )
                     }
                 }
             }
         }
-        if (reactions.isNotEmpty()) {
-            Spacer(Modifier.height(2.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                reactions.groupBy { it.emoji }.forEach { (emoji, list) ->
-                    TextButton(onClick = { onReactionChipClick(emoji) }) {
-                        Text(
-                            "$emoji ${list.size}",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = colors.text
-                        )
-                    }
-                }
-            }
+    }
+}
+
+/** Time (+ ticks for my messages), right-aligned at a bubble's bottom. */
+@Composable
+private fun MetaRow(timeText: String, tickState: TickState?, mine: Boolean) {
+    Row(
+        modifier = Modifier.fillMaxWidth(),
+        horizontalArrangement = Arrangement.End,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = timeText,
+            style = MaterialTheme.typography.bodySmall,
+            fontSize = 11.sp,
+            color = WhatsAppTickGrey
+        )
+        if (mine && tickState != null) {
+            Spacer(Modifier.width(2.dp))
+            TickIcon(state = tickState, onBubble = true)
         }
     }
 }
