@@ -1,42 +1,15 @@
-# PingChat Android — OneSignal push setup (FCM)
+# OBSOLETE — do not follow this guide (v2.0.0)
 
-Same OneSignal app as the web app. App ID: `da3c98f6-d518-41d1-807e-0e8b77c702d6`
-(reused — do NOT create a new OneSignal app). The Supabase trigger
-(`database/notify-push.sql` in the web repo) already sends pushes by
-Supabase user id, so it keeps working once the Android device subscribes
-with the same external user id (the app calls `OneSignal.login(userId)`).
+This guide described OneSignal push for the Supabase-based v1.x Android app.
+**v2.0.0 removed OneSignal entirely.** The Android app now uses Firebase
+Cloud Messaging directly:
 
-## What Hasibul must do (his Google account — Maya cannot do this for him)
+- On sign-in the app saves its FCM token to `users/{uid}.fcmToken`
+  (`AuthRepository.kt` → `PushHelper`).
+- `data/PingChatMessagingService.kt` shows incoming message/call pushes.
+- Sending still needs a server side (a Cloud Function watching new messages
+  and calls) — see the "Push notifications" section in `README.md`.
 
-### 1. Firebase project (free)
-1. Go to https://console.firebase.google.com → Add project → name it
-   `PingChat` → create (Google Analytics off is fine).
-2. In the project, Add app → Android. Package name exactly:
-   `com.mdhasibulislam.pingchat`. App nickname `PingChat`.
-3. Download `google-services.json` and put it in the `app/` folder of this
-   repo (next to `app/build.gradle.kts`). Commit it — it is a public client
-   config, not a secret.
-
-### 2. FCM server key → OneSignal
-1. Firebase Console → Project settings → Cloud Messaging.
-2. Under "Cloud Messaging API (Legacy)", copy the **Server key**. If it says
-   the API is disabled, enable it from the three-dot menu / Google Cloud
-   Console link shown there, then copy the key.
-   (OneSignal also supports the newer FCM HTTP v1 API with a service-account
-   JSON — the legacy Server key is the simpler path.)
-3. OneSignal dashboard → open the PingChat app → Settings → Platforms →
-   Google Android (FCM) → paste the Server key → Save.
-   (The web/Chrome platform already configured there stays untouched.)
-
-### 3. Test
-1. Install the APK on the phone, log in, allow notifications.
-2. From another account, send a chat message to this user.
-3. Expected: a push arrives with the sender's name. If nothing arrives,
-   check OneSignal → Delivery → the notification's status, and confirm
-   `google-services.json` is in `app/` and the Server key matches.
-
-## Notes
-- No new OneSignal REST key is needed — the Supabase trigger uses the
-  existing key stored in `public.onesignal_config`.
-- If the app is rebuilt with a different package name, repeat step 1 with
-  that package name and re-download `google-services.json`.
+No OneSignal app, dashboard key, or FCM server key in OneSignal is needed
+anymore. This file is kept only so the old instructions are not mistaken
+for current ones.
