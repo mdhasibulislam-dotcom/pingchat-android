@@ -19,13 +19,22 @@ import kotlinx.coroutines.tasks.await
  *   lastMessageAt (millis), lastMessageKind, lastReadAt {uid: millis}
  * - conversations/{pairId}/messages/{msgId}: senderId, body, kind
  *   (text/voice/photo), mediaUrl, mediaPath, viewOnce, consumedAt,
- *   replyToId, deletedBy [uid], reactions {uid: emoji}, createdAtMillis
- * - conversations/{pairId}/typing/{uid}: userId, name, updatedAt
+ *   replyToId, deletedBy [uid], reactions {uid: emoji}, createdAtMillis,
+ *   participants [uid, uid] (denormalized: the Firestore rules cannot
+ *   use get() to check the parent conversation during a list query —
+ *   "rules are not filters" — so every message carries its participants
+ *   and every messages query filters whereArrayContains("participants", me))
+ * - conversations/{pairId}/typing/{uid}: userId, name, updatedAt,
+ *   participants [uid, uid] (same reason as messages)
  *
  * Timestamps are epoch millis in Firestore; the models keep ISO strings,
  * so TimeFormat / tick logic works unchanged. Conversations are sorted
  * client-side (an array-contains + orderBy query would need a composite
  * index); every other query uses a single field so no index is required.
+ * EXCEPTION: messages queries use whereArrayContains("participants", me)
+ * + orderBy("createdAtMillis"), which needs two composite indexes
+ * (participants array-contains + createdAtMillis ASC and DESC) — see
+ * firestore.rules for the definitions.
  */
 class ChatRepository {
     private val db get() = FirebaseDb.db
@@ -36,6 +45,28 @@ class ChatRepository {
     private fun conversationsRef() = db.collection("conversations")
     private fun messagesRef(conversationId: String) =
         conversationsRef().document(conversationId).collection("messages")
+
+    /**
+     * The conversation's participants, cached per conversation. Messages
+     * and typing docs carry a denormalized `participants` array (the
+     * Firestore rules cannot use get() on the parent conversation during
+     * a list query, so membership must live on each document itself).
+     */
+    private val participantsCache = mutableMapOf<String, List<String>>()
+
+    private suspend fun participantsFor(conversationId: String): List<String> {
+        participantsCache[conversationId]?.let { return it }
+        return try {
+            val snap = conversationsRef().document(conversationId).get().await()
+            @Suppress("UNCHECKED_CAST")
+            val list = (snap.data?.get("participants") as? List<*>)
+                ?.mapNotNull { it as? String } ?: emptyList()
+            if (list.isNotEmpty()) participantsCache[conversationId] = list
+            list
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
 
     /** Load all 1-to-1 conversations for the signed-in user, newest first. */
     suspend fun loadConversations(): List<ConversationItem> {
@@ -60,6 +91,7 @@ class ChatRepository {
             val myReadMillis = (lastRead?.get(me) as? Long)
             val peerReadMillis = (lastRead?.get(peerId) as? Long)
             val last = messagesRef(conv.id)
+                .whereArrayContains("participants", me)
                 .orderBy("createdAtMillis", Query.Direction.DESCENDING)
                 .limit(1)
                 .get()
@@ -88,6 +120,7 @@ class ChatRepository {
         val me = myId() ?: return 0
         return try {
             var query = messagesRef(conversationId)
+                .whereArrayContains("participants", me)
                 .orderBy("createdAtMillis", Query.Direction.ASCENDING)
             if (myLastReadAtMillis != null) {
                 query = query.whereGreaterThan("createdAtMillis", myLastReadAtMillis)
@@ -106,9 +139,10 @@ class ChatRepository {
 
     /** Latest messages of a conversation, oldest first. */
     suspend fun loadMessages(conversationId: String, limit: Int = 200): List<ChatMessage> {
-        val me = myId()
+        val me = myId() ?: return emptyList()
         return try {
             messagesRef(conversationId)
+                .whereArrayContains("participants", me)
                 .orderBy("createdAtMillis", Query.Direction.ASCENDING)
                 .limit(limit.toLong())
                 .get()
@@ -148,10 +182,12 @@ class ChatRepository {
         messageIds: List<String>
     ): Map<String, List<Reaction>> {
         if (messageIds.isEmpty()) return emptyMap()
+        val me = myId() ?: return emptyMap()
         return try {
             // Reactions live on the message docs themselves; read the
             // conversation's messages once and pick out the requested ids.
             val messages = messagesRef(conversationId)
+                .whereArrayContains("participants", me)
                 .orderBy("createdAtMillis", Query.Direction.ASCENDING)
                 .limit(500)
                 .get()
@@ -191,6 +227,7 @@ class ChatRepository {
                 "consumedAt" to null,
                 "deletedBy" to emptyList<String>(),
                 "reactions" to emptyMap<String, String>(),
+                "participants" to participantsFor(conversationId),
                 "createdAtMillis" to now
             )
             ref.set(data).await()
@@ -279,6 +316,7 @@ class ChatRepository {
                 "consumedAt" to null,
                 "deletedBy" to emptyList<String>(),
                 "reactions" to emptyMap<String, String>(),
+                "participants" to participantsFor(conversationId),
                 "createdAtMillis" to now
             )
             ref.set(data).await()
@@ -399,6 +437,7 @@ class ChatRepository {
     suspend fun clearChat(conversationId: String) {
         val me = myId() ?: return
         val snap = messagesRef(conversationId)
+            .whereArrayContains("participants", me)
             .orderBy("createdAtMillis", Query.Direction.ASCENDING)
             .limit(500)
             .get()
@@ -437,8 +476,9 @@ class ChatRepository {
 
     /** Live messages of one conversation, oldest first. */
     fun messagesFlow(conversationId: String): Flow<List<ChatMessage>> = callbackFlow {
-        val me = myId()
+        val me = myId() ?: run { close(); return@callbackFlow }
         val reg = messagesRef(conversationId)
+            .whereArrayContains("participants", me)
             .orderBy("createdAtMillis", Query.Direction.ASCENDING)
             .addSnapshotListener { snap, _ ->
                 if (snap != null) {
@@ -472,9 +512,10 @@ class ChatRepository {
 
     /** Typing events from the peer (a doc appears/updates in typing/{uid}). */
     fun typingFlow(conversationId: String): Flow<TypingPayload> = callbackFlow {
-        val me = myId()
+        val me = myId() ?: run { close(); return@callbackFlow }
         val reg = conversationsRef().document(conversationId)
             .collection("typing")
+            .whereArrayContains("participants", me)
             .addSnapshotListener { snap, _ ->
                 snap?.documentChanges?.forEach { change ->
                     if (change.type == com.google.firebase.firestore.DocumentChange.Type.ADDED ||
@@ -492,9 +533,10 @@ class ChatRepository {
 
     /** Typing-stop events from the peer (their typing doc was removed). */
     fun typingStopFlow(conversationId: String): Flow<TypingPayload> = callbackFlow {
-        val me = myId()
+        val me = myId() ?: run { close(); return@callbackFlow }
         val reg = conversationsRef().document(conversationId)
             .collection("typing")
+            .whereArrayContains("participants", me)
             .addSnapshotListener { snap, _ ->
                 snap?.documentChanges?.forEach { change ->
                     if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
@@ -517,7 +559,8 @@ class ChatRepository {
                     mapOf(
                         "userId" to me,
                         "name" to payload.name,
-                        "updatedAt" to nowMillis()
+                        "updatedAt" to nowMillis(),
+                        "participants" to participantsFor(conversationId)
                     )
                 ).await()
         } catch (e: Exception) {
