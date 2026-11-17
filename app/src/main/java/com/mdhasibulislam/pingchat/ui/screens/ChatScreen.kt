@@ -19,8 +19,11 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
@@ -61,6 +64,7 @@ import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -93,12 +97,15 @@ import com.mdhasibulislam.pingchat.data.Reaction
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.TickState
 import com.mdhasibulislam.pingchat.data.TimeFormat
+import com.mdhasibulislam.pingchat.data.messageDisplayText
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.components.TickIcon
 import com.mdhasibulislam.pingchat.ui.components.TypingIndicator
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
+import com.mdhasibulislam.pingchat.ui.viewmodel.CallViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ChatViewModel
+import kotlinx.coroutines.launch
 
 class ChatViewModelFactory(private val conversationId: String) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -119,9 +126,14 @@ private fun buildDisplayItems(messages: List<ChatMessage>): List<ChatListItem> {
     for (m in messages) {
         val p = prev
         if (p == null || !TimeFormat.isSameDay(p.createdAt, m.createdAt)) {
-            out += ChatListItem.Day(TimeFormat.dayLabel(m.createdAt), m.id)
+            // Never emit a blank day label (a message with an unparseable
+            // date used to render as an empty grey pill in the middle
+            // of the chat).
+            val label = TimeFormat.dayLabel(m.createdAt)
+            if (label.isNotBlank()) out += ChatListItem.Day(label, m.id)
         } else if (TimeFormat.minutesBetween(p.createdAt, m.createdAt) >= 20) {
-            out += ChatListItem.Gap(TimeFormat.fmtTime(m.createdAt), m.id)
+            val label = TimeFormat.fmtTime(m.createdAt)
+            if (label.isNotBlank()) out += ChatListItem.Gap(label, m.id)
         }
         out += ChatListItem.Msg(m)
         prev = m
@@ -200,6 +212,52 @@ fun ChatScreen(
         }
     }
 
+    // Audio/video calls (Phase 2): camera + mic permission, then start a
+    // real WebRTC call to the peer. The peer must be online.
+    val callViewModel: CallViewModel = viewModel()
+    val scope = rememberCoroutineScope()
+    var pendingCallKind by remember { mutableStateOf<String?>(null) }
+    val callPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val kind = pendingCallKind
+        pendingCallKind = null
+        val p = viewModel.peer.value
+        if (kind == null || p == null) return@rememberLauncherForActivityResult
+        if (result.values.all { it }) {
+            scope.launch {
+                val err = callViewModel.startCall(p, kind, conversationId)
+                if (err != null) Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            Toast.makeText(
+                context,
+                "Microphone and camera permission is needed for calls.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+    fun requestCall(kind: String) {
+        val p = viewModel.peer.value ?: return
+        if (!SessionManager.onlineIds.value.contains(p.id)) {
+            Toast.makeText(context, "They are offline.", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val needed = arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+        if (needed.all {
+                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+            }
+        ) {
+            scope.launch {
+                val err = callViewModel.startCall(p, kind, conversationId)
+                if (err != null) Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            pendingCallKind = kind
+            callPermission.launch(needed)
+        }
+    }
+
     // Opening a photo as the recipient consumes it (view-once): the row
     // is deleted from the database. The ViewModel guards the sender.
     LaunchedEffect(viewingPhoto) {
@@ -239,11 +297,14 @@ fun ChatScreen(
 
     Column(modifier = Modifier.fillMaxSize()) {
         // Header, Messenger-style: back, avatar + name + status,
-        // audio call, video call, info (profile). Calls land in the next update.
+        // audio call, video call, info (profile). statusBarsPadding keeps
+        // the header below the system status bar (targetSdk 37 is
+        // edge-to-edge, so content otherwise draws under the clock/battery).
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(colors.card)
+                .statusBarsPadding()
                 .padding(horizontal = 4.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -266,14 +327,10 @@ fun ChatScreen(
                     color = if (peerOnline) colors.text else colors.muted
                 )
             }
-            IconButton(onClick = {
-                Toast.makeText(context, "Audio calls are coming in the next update.", Toast.LENGTH_SHORT).show()
-            }) {
+            IconButton(onClick = { requestCall("audio") }) {
                 Icon(Icons.Default.Phone, contentDescription = "Audio call", tint = colors.text)
             }
-            IconButton(onClick = {
-                Toast.makeText(context, "Video calls are coming in the next update.", Toast.LENGTH_SHORT).show()
-            }) {
+            IconButton(onClick = { requestCall("video") }) {
                 Icon(Icons.Default.Videocam, contentDescription = "Video call", tint = colors.text)
             }
             IconButton(onClick = { showProfile = true }) {
@@ -401,11 +458,16 @@ fun ChatScreen(
         }
 
         // Composer, Messenger-style: [+] attach (gallery photo only),
-        // pill-shaped grey text field, mic to record / send when typing.
+        // mic to record, pill-shaped grey text field, send when typing.
+        // imePadding lifts the composer with the keyboard (the manifest
+        // already uses adjustResize); navigationBarsPadding keeps it above
+        // the system gesture bar when the keyboard is closed.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
                 .background(colors.card)
+                .navigationBarsPadding()
+                .imePadding()
                 .padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
@@ -440,6 +502,13 @@ fun ChatScreen(
                     Icon(Icons.Default.Stop, contentDescription = "Stop and send", tint = Color.Red)
                 }
             } else {
+                IconButton(onClick = { requestMicAndRecord() }) {
+                    Icon(
+                        Icons.Default.Mic,
+                        contentDescription = "Record a voice message",
+                        tint = colors.text
+                    )
+                }
                 TextField(
                     value = input,
                     onValueChange = {
@@ -479,14 +548,6 @@ fun ChatScreen(
                                 tint = colors.text
                             )
                         }
-                    }
-                } else {
-                    IconButton(onClick = { requestMicAndRecord() }) {
-                        Icon(
-                            Icons.Default.Mic,
-                            contentDescription = "Record a voice message",
-                            tint = colors.text
-                        )
                     }
                 }
             }
@@ -604,14 +665,7 @@ fun ChatScreen(
 }
 
 /** Short preview text for a replied-to message (photo/voice have no body). */
-private fun replyPreview(message: ChatMessage): String =
-    message.body.ifBlank {
-        when (message.kind) {
-            "photo" -> "Photo"
-            "voice" -> "Voice message"
-            else -> ""
-        }
-    }
+private fun replyPreview(message: ChatMessage): String = messageDisplayText(message)
 
 /** Messenger-style intro card at the top of a chat: big photo, name, @username. */
 @Composable
@@ -650,6 +704,8 @@ private fun ChatIntroCard(peer: Profile, online: Boolean, onViewProfile: () -> U
 
 @Composable
 private fun DayLabel(text: String) {
+    // Blank text renders as an empty grey pill — show nothing instead.
+    if (text.isBlank()) return
     Box(
         modifier = Modifier.fillMaxWidth(),
         contentAlignment = Alignment.Center
@@ -783,7 +839,10 @@ private fun MessageBubble(
                     else -> {
                         Row(verticalAlignment = Alignment.Bottom) {
                             Text(
-                                text = message.body,
+                                // Never render an empty bubble: a text-kind
+                                // row with a blank body falls back to
+                                // "Voice message" / "Photo" / "Message".
+                                text = messageDisplayText(message),
                                 style = MaterialTheme.typography.bodyMedium,
                                 color = if (mine) Color.White else colors.text,
                                 modifier = Modifier.weight(1f, fill = false)

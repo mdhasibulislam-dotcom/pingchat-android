@@ -7,9 +7,13 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -45,6 +49,9 @@ import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.AuthViewModel
 
+/** Login / register fields are pill-shaped (rounded), not boxy rectangles. */
+private val AuthFieldShape = RoundedCornerShape(50)
+
 /** Shared auth chrome: logo, title, error/info banners. */
 @Composable
 private fun AuthShell(title: String, subtitle: String, content: @Composable () -> Unit) {
@@ -52,6 +59,9 @@ private fun AuthShell(title: String, subtitle: String, content: @Composable () -
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .statusBarsPadding()
+            .navigationBarsPadding()
+            .imePadding()
             .verticalScroll(rememberScrollState())
             .padding(horizontal = 24.dp, vertical = 32.dp),
         horizontalAlignment = Alignment.CenterHorizontally
@@ -118,6 +128,7 @@ private fun PasswordField(
         onValueChange = onValueChange,
         label = { Text(label) },
         singleLine = true,
+        shape = AuthFieldShape,
         visualTransformation = if (visible) VisualTransformation.None else PasswordVisualTransformation(),
         keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
         trailingIcon = {
@@ -137,6 +148,7 @@ private fun GoogleButton(loading: Boolean, onClick: () -> Unit) {
     OutlinedButton(
         onClick = onClick,
         enabled = !loading,
+        shape = AuthFieldShape,
         modifier = Modifier.fillMaxWidth()
     ) {
         if (loading) {
@@ -182,6 +194,7 @@ fun LoginScreen(
             onValueChange = { email = it },
             label = { Text("Email") },
             singleLine = true,
+            shape = AuthFieldShape,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             modifier = Modifier.fillMaxWidth()
         )
@@ -191,6 +204,7 @@ fun LoginScreen(
         Button(
             onClick = { viewModel.login(email, password) },
             enabled = !state.loading,
+            shape = AuthFieldShape,
             modifier = Modifier.fillMaxWidth()
         ) {
             if (state.loading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -236,6 +250,7 @@ fun RegisterScreen(
             onValueChange = { name = it },
             label = { Text("Full name") },
             singleLine = true,
+            shape = AuthFieldShape,
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(12.dp))
@@ -247,6 +262,7 @@ fun RegisterScreen(
             },
             label = { Text("Username") },
             singleLine = true,
+            shape = AuthFieldShape,
             modifier = Modifier.fillMaxWidth(),
             supportingText = {
                 Text(
@@ -261,6 +277,7 @@ fun RegisterScreen(
             onValueChange = { email = it },
             label = { Text("Email") },
             singleLine = true,
+            shape = AuthFieldShape,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             modifier = Modifier.fillMaxWidth()
         )
@@ -272,6 +289,7 @@ fun RegisterScreen(
         Button(
             onClick = { viewModel.register(name, username, email, password, password2) },
             enabled = !state.loading,
+            shape = AuthFieldShape,
             modifier = Modifier.fillMaxWidth()
         ) {
             if (state.loading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
@@ -298,6 +316,7 @@ fun ForgotPasswordScreen(viewModel: AuthViewModel, onBackToLogin: () -> Unit) {
             onValueChange = { email = it },
             label = { Text("Email") },
             singleLine = true,
+            shape = AuthFieldShape,
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
             modifier = Modifier.fillMaxWidth()
         )
@@ -305,6 +324,7 @@ fun ForgotPasswordScreen(viewModel: AuthViewModel, onBackToLogin: () -> Unit) {
         Button(
             onClick = { viewModel.resetPassword(email) },
             enabled = !state.loading,
+            shape = AuthFieldShape,
             modifier = Modifier.fillMaxWidth()
         ) {
             if (state.loading) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)

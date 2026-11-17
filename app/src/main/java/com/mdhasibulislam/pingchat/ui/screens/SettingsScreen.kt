@@ -83,7 +83,7 @@ fun SettingsScreen(
         )
         SettingsRow(
             title = "Ringtone",
-            subtitle = "Play a sound for incoming calls (Phase 2).",
+            subtitle = "Play a sound for incoming calls.",
             checked = ringtone,
             onCheckedChange = {
                 ringtone = it
@@ -166,7 +166,7 @@ fun SettingsScreen(
         }
         Spacer(Modifier.height(8.dp))
         Text(
-            "PingChat native (Phase 1) — chats, friends and profiles. Calls and voice messages come next.",
+            "PingChat native — chats, friends, profiles and calls.",
             style = MaterialTheme.typography.bodySmall,
             color = colors.muted
         )
@@ -211,7 +211,7 @@ fun CallsScreen() {
         Text("Audio & video calls", style = MaterialTheme.typography.titleLarge, color = colors.text)
         Spacer(Modifier.height(8.dp))
         Text(
-            "Calls are coming in the next update. Chats, friends and profiles already work.",
+            "Start a call from any chat — tap the phone or video button at the top.",
             style = MaterialTheme.typography.bodyMedium,
             color = colors.muted,
             textAlign = androidx.compose.ui.text.style.TextAlign.Center

@@ -41,6 +41,7 @@ import androidx.compose.ui.unit.dp
 import com.mdhasibulislam.pingchat.data.ConversationItem
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.TimeFormat
+import com.mdhasibulislam.pingchat.data.messageDisplayText
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
@@ -241,8 +242,10 @@ private fun ConversationRow(
         last == null -> "No messages yet — say hello."
         last.kind == "photo" -> (if (last.senderId == myId) "You: " else "") + "Photo"
         last.kind == "voice" -> (if (last.senderId == myId) "You: " else "") + "Voice message"
-        last.senderId == myId -> "You: ${last.body}"
-        else -> last.body
+        // messageDisplayText never returns blank: a text-kind row with an
+        // empty body falls back to "Voice message" / "Photo" / "Message".
+        last.senderId == myId -> "You: ${messageDisplayText(last)}"
+        else -> messageDisplayText(last)
     }
     Row(
         modifier = Modifier
