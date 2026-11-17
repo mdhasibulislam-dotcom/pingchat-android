@@ -28,18 +28,20 @@ import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.unit.dp
 import com.mdhasibulislam.pingchat.data.Profile
 import com.mdhasibulislam.pingchat.data.TickState
-import com.mdhasibulislam.pingchat.ui.theme.Emerald
+import com.mdhasibulislam.pingchat.ui.theme.WhatsAppTickBlue
+import com.mdhasibulislam.pingchat.ui.theme.WhatsAppTickGrey
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 
 /**
  * Read ticks, WhatsApp-style, inside the bubble (bottom-right, small).
- * - SENT: single tick (sent, peer offline / no notification yet).
- * - DELIVERED: double tick (reached the peer's phone).
- * - SEEN: tick inside a round badge (peer actually looked at the message).
+ * - SENT: single grey tick (sent, peer offline / no notification yet).
+ * - DELIVERED: double grey tick (reached the peer's phone).
+ * - SEEN: double BLUE tick (peer actually looked at the message).
  */
 @Composable
 fun TickIcon(state: TickState, onBubble: Boolean = true, modifier: Modifier = Modifier) {
-    val tickTint = if (onBubble) Color.White.copy(alpha = 0.85f) else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+    val tickTint = if (onBubble) WhatsAppTickGrey else MaterialTheme.colorScheme.onSurface.copy(alpha = 0.6f)
+    val seenTint = if (onBubble) WhatsAppTickBlue else MaterialTheme.colorScheme.primary
     when (state) {
         TickState.SENT -> Icon(
             imageVector = Icons.Default.Check,
@@ -63,25 +65,21 @@ fun TickIcon(state: TickState, onBubble: Boolean = true, modifier: Modifier = Mo
                 tint = tickTint
             )
         }
-        TickState.SEEN -> {
-            // Round badge: white circle + emerald tick on the bubble,
-            // emerald circle + white tick elsewhere.
-            val badgeBg = if (onBubble) Color.White else Emerald
-            val badgeTick = if (onBubble) Emerald else Color.White
-            Box(
-                modifier = modifier
-                    .size(16.dp)
-                    .clip(CircleShape)
-                    .background(badgeBg),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    imageVector = Icons.Default.Check,
-                    contentDescription = "Seen",
-                    modifier = Modifier.size(11.dp),
-                    tint = badgeTick
-                )
-            }
+        TickState.SEEN -> Box(modifier = modifier.size(19.dp)) {
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = "Seen",
+                modifier = Modifier.size(15.dp),
+                tint = seenTint
+            )
+            Icon(
+                imageVector = Icons.Default.Check,
+                contentDescription = null,
+                modifier = Modifier
+                    .size(15.dp)
+                    .offset(x = 5.dp),
+                tint = seenTint
+            )
         }
     }
 }
