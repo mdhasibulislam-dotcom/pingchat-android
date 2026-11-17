@@ -1,40 +1,50 @@
 rules_version = '2';
 
-// PingChat v2.0.0 — Firestore Security Rules (Firebase project ping-chat-fcda6).
+// PingChat v2.0.2 — Firestore Security Rules (Firebase project ping-chat-fcda6).
 //
 // Data model:
 //   users/{uid}            profile + presence + fcmToken
 //   conversations/{id}     participants [uid, uid], lastMessage*, lastReadAt {uid: millis}
 //   conversations/{id}/messages/{msgId}
+//                          senderId, body, kind, ..., participants [uid, uid]
+//                          (participants is denormalized onto every message
+//                          so list queries can prove membership — see below)
 //   conversations/{id}/typing/{uid}
+//                          userId, name, updatedAt, participants [uid, uid]
 //   friendships/{pairId}   requesterId, addresseeId, status pending/accepted/declined
 //   calls/{callId}         callerId, calleeId, kind, status, offerSdp, answerSdp, ...
 //   calls/{callId}/candidates/{id}
+//                          senderId, candidate, ..., participants [uid, uid]
 //
 // Publish: Firebase console -> Firestore Database -> Rules -> paste -> Publish.
 // (Or: firebase deploy --only firestore:rules with the Firebase CLI.)
 //
-// Least privilege: every rule requires a signed-in user, and every document
-// is readable/writable only by the people involved in it. There are no
-// server-side checks beyond these rules — the app code enforces the rest
-// (friend checks, view-once consume, blocked users, ...).
+// WHY NO get() IN THESE RULES — READ THIS BEFORE "SIMPLIFYING" THEM:
+// Firestore security rules are NOT filters. A list query (collection
+// query / realtime listener) is allowed only when the QUERY ITSELF proves
+// every document it could return satisfies the rule. A rule that calls
+// get() on another document (e.g. fetching the parent conversation to
+// check its participants) can never be proven from a query, so the whole
+// query is denied with PERMISSION_DENIED — even though reading one
+// document by ID with the same rule works fine. That is exactly the bug
+// v2.0.0/v2.0.1 had: registration and login succeeded, then the app's
+// first chats/messages query was denied right after sign-in.
+// So every rule below reads ONLY the document being accessed
+// (resource.data / request.resource.data) and every query in the app
+// carries a matching constraint (e.g. whereArrayContains("participants",
+// <myUid>) or whereEqualTo("calleeId", <myUid>)) that proves the rule.
+//
+// COMPOSITE INDEXES (create once in console -> Firestore Database ->
+// Indexes -> Add index; they build in a few minutes):
+//   1. collection "messages": participants [Array contains], createdAtMillis [Ascending]
+//   2. collection "messages": participants [Array contains], createdAtMillis [Descending]
+// Everything else the app queries uses a single field (auto-indexed).
 
 service cloud.firestore {
   match /databases/{database}/documents {
 
     function signedIn() {
       return request.auth != null;
-    }
-
-    function isParticipant(conversationId) {
-      return signedIn() &&
-        request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
-    }
-
-    function isCallParty(callId) {
-      let call = get(/databases/$(database)/documents/calls/$(callId)).data;
-      return signedIn() &&
-        (request.auth.uid == call.callerId || request.auth.uid == call.calleeId);
     }
 
     // ---- users ----
@@ -49,37 +59,70 @@ service cloud.firestore {
 
     // ---- conversations + messages + typing ----
     match /conversations/{conversationId} {
-      allow read: if isParticipant(conversationId);
+      // Single get: a missing doc (existence check in getOrCreate) is
+      // readable — it only reveals that this id has no conversation yet.
+      allow get: if signedIn() &&
+        (resource == null || request.auth.uid in resource.data.participants);
+      // List: the app always queries whereArrayContains("participants", me),
+      // which proves membership for every document the query can return.
+      allow list: if signedIn() &&
+        request.auth.uid in resource.data.participants;
       // Create: I must be one of the two participants.
       allow create: if signedIn() &&
         request.auth.uid in request.resource.data.participants;
       // Update: participants may refresh lastMessage / lastReadAt.
-      allow update: if isParticipant(conversationId);
+      allow update: if signedIn() &&
+        request.auth.uid in resource.data.participants;
       allow delete: if false;
 
       match /messages/{messageId} {
-        allow read: if isParticipant(conversationId);
+        allow get: if signedIn() &&
+          request.auth.uid in resource.data.participants;
+        // List: every messages query carries
+        // whereArrayContains("participants", me).
+        allow list: if signedIn() &&
+          request.auth.uid in resource.data.participants;
         // Send: senderId must be me, and I must be a participant.
-        allow create: if isParticipant(conversationId) &&
+        allow create: if signedIn() &&
+          request.auth.uid in request.resource.data.participants &&
           request.resource.data.senderId == request.auth.uid;
         // Update: reactions map, deletedBy (delete-for-me), clear-chat.
-        allow update: if isParticipant(conversationId);
+        allow update: if signedIn() &&
+          request.auth.uid in resource.data.participants;
         // Delete: view-once consume (recipient) and delete-for-everyone
         // (sender) — both are participant deletes; the app code enforces
         // who may delete what.
-        allow delete: if isParticipant(conversationId);
+        allow delete: if signedIn() &&
+          request.auth.uid in resource.data.participants;
       }
 
       match /typing/{userId} {
-        allow read, write: if isParticipant(conversationId) &&
-          request.auth.uid == userId;
+        allow get: if signedIn() &&
+          request.auth.uid in resource.data.participants;
+        // List: the typing listeners carry
+        // whereArrayContains("participants", me).
+        allow list: if signedIn() &&
+          request.auth.uid in resource.data.participants;
+        // Write my own typing doc, and I must be a participant.
+        allow create, update: if signedIn() &&
+          request.auth.uid == userId &&
+          request.auth.uid in request.resource.data.participants;
+        allow delete: if signedIn() && request.auth.uid == userId;
       }
     }
 
     // ---- friendships ----
     // Only the two users in the row can see or change it.
     match /friendships/{pairId} {
-      allow read: if signedIn() &&
+      // Single get: a missing doc (friend check in getOrCreate) is
+      // readable — it only reveals that no request exists for this pair.
+      allow get: if signedIn() &&
+        (resource == null ||
+         request.auth.uid == resource.data.requesterId ||
+         request.auth.uid == resource.data.addresseeId);
+      // List: the app always queries whereEqualTo("requesterId", me) or
+      // whereEqualTo("addresseeId", me), which proves one side.
+      allow list: if signedIn() &&
         (request.auth.uid == resource.data.requesterId ||
          request.auth.uid == resource.data.addresseeId);
       // Send request: requesterId must be me.
@@ -96,16 +139,33 @@ service cloud.firestore {
 
     // ---- calls + ICE candidates ----
     match /calls/{callId} {
-      allow read: if isCallParty(callId);
+      allow get: if signedIn() &&
+        (request.auth.uid == resource.data.callerId ||
+         request.auth.uid == resource.data.calleeId);
+      // List: the incoming-call listeners query
+      // whereEqualTo("calleeId", me), which proves the callee side.
+      allow list: if signedIn() &&
+        (request.auth.uid == resource.data.callerId ||
+         request.auth.uid == resource.data.calleeId);
       // Start a call: callerId must be me.
       allow create: if signedIn() &&
         request.resource.data.callerId == request.auth.uid;
       // Accept / decline / end / answer: either party.
-      allow update: if isCallParty(callId);
+      allow update: if signedIn() &&
+        (request.auth.uid == resource.data.callerId ||
+         request.auth.uid == resource.data.calleeId);
       allow delete: if false;
 
       match /candidates/{candidateId} {
-        allow read, create: if isCallParty(callId) &&
+        allow get: if signedIn() &&
+          request.auth.uid in resource.data.participants;
+        // List: the candidates listener carries
+        // whereArrayContains("participants", me).
+        allow list: if signedIn() &&
+          request.auth.uid in resource.data.participants;
+        // Send: senderId must be me, and I must be a participant.
+        allow create: if signedIn() &&
+          request.auth.uid in request.resource.data.participants &&
           request.resource.data.senderId == request.auth.uid;
         allow update, delete: if false;
       }
