@@ -125,3 +125,31 @@ enum class FriendState {
 
 /** Read-tick state for one of my messages — same 3 states as the web app. */
 enum class TickState { SENT, DELIVERED, SEEN }
+
+/**
+ * Text a bubble or chat-list preview should show for a message — never
+ * blank. A text-kind row with an empty body (e.g. a voice message migrated
+ * from the old v1 app, whose kind stayed 'text') used to render as a tiny
+ * empty green pill showing only the tick. Such rows fall back to
+ * "Voice message" / "Photo" from their media, or "Message" when there is
+ * nothing else to show.
+ */
+fun messageDisplayText(message: ChatMessage): String {
+    if (message.body.isNotBlank()) return message.body
+    return when (message.kind) {
+        "photo" -> "Photo"
+        "voice" -> "Voice message"
+        else -> {
+            val path = message.mediaPath ?: message.mediaUrl ?: ""
+            when {
+                path.endsWith(".m4a", ignoreCase = true) ||
+                    path.endsWith(".mp3", ignoreCase = true) ||
+                    path.endsWith(".webm", ignoreCase = true) ||
+                    path.endsWith(".ogg", ignoreCase = true) ||
+                    path.endsWith(".mp4", ignoreCase = true) -> "Voice message"
+                path.isNotBlank() -> "Photo"
+                else -> "Message"
+            }
+        }
+    }
+}

@@ -2,6 +2,7 @@ package com.mdhasibulislam.pingchat.data
 
 import java.time.Duration
 import java.time.Instant
+import java.time.OffsetDateTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
@@ -20,12 +21,22 @@ object TimeFormat {
     private val dayShortFmt = DateTimeFormatter.ofPattern("MMM d", Locale.US)
     private val weekdayFmt = DateTimeFormatter.ofPattern("EEE", Locale.US)
 
+    /**
+     * Supabase/PostgREST returns timestamptz with a numeric offset, e.g.
+     * "2026-11-17T02:53:10.123456+00:00" — Instant.parse() only accepts a
+     * trailing "Z" and returns null for those, which blanked every date/time
+     * label. Try OffsetDateTime first (handles +00:00 and Z), then Instant.
+     */
     fun parse(iso: String?): Instant? {
         if (iso.isNullOrBlank()) return null
         return try {
-            Instant.parse(iso)
+            OffsetDateTime.parse(iso).toInstant()
         } catch (e: Exception) {
-            null
+            try {
+                Instant.parse(iso)
+            } catch (e2: Exception) {
+                null
+            }
         }
     }
 
