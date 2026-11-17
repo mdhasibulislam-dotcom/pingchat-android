@@ -30,21 +30,49 @@ class AuthRepository {
     suspend fun signUp(name: String, username: String, email: String, password: String): Boolean {
         val result = auth.createUserWithEmailAndPassword(email, password).await()
         val user = result.user ?: throw IllegalStateException("Could not create your account.")
+        // The username check needs a signed-in user: the Firestore rules
+        // only allow reads to signed-in users, so checking before sign-up
+        // is always denied — and the old code reported that denial as
+        // "already taken", which blocked every username. Check here, now
+        // that this account is signed in.
+        val available = try {
+            db.collection("users")
+                .whereEqualTo("username", username)
+                .limit(1)
+                .get()
+                .await()
+                .isEmpty
+        } catch (e: Exception) {
+            // The check itself failed (e.g. network) — roll the new
+            // account back so the user can retry cleanly, and report the
+            // real error instead of "taken".
+            try { user.delete().await() } catch (ignored: Exception) { /* best effort */ }
+            throw e
+        }
+        if (!available) {
+            try { user.delete().await() } catch (ignored: Exception) { /* best effort */ }
+            throw IllegalStateException("That username is already taken.")
+        }
         val now = nowMillis()
-        db.collection("users").document(user.uid).set(
-            mapOf(
-                "username" to username,
-                "fullName" to name,
-                "bio" to null,
-                "avatarUrl" to "",
-                "isPublic" to true,
-                "online" to false,
-                "lastSeen" to now,
-                "createdAt" to now,
-                "updatedAt" to now
-            ),
-            SetOptions.merge()
-        ).await()
+        try {
+            db.collection("users").document(user.uid).set(
+                mapOf(
+                    "username" to username,
+                    "fullName" to name,
+                    "bio" to null,
+                    "avatarUrl" to "",
+                    "isPublic" to true,
+                    "online" to false,
+                    "lastSeen" to now,
+                    "createdAt" to now,
+                    "updatedAt" to now
+                ),
+                SetOptions.merge()
+            ).await()
+        } catch (e: Exception) {
+            try { user.delete().await() } catch (ignored: Exception) { /* best effort */ }
+            throw e
+        }
         return true
     }
 
