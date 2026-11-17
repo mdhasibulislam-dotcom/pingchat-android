@@ -12,8 +12,8 @@ android {
         applicationId = "com.mdhasibulislam.pingchat"
         minSdk = 24
         targetSdk = 37
-        versionCode = 5
-        versionName = "1.0.4"
+        versionCode = 6
+        versionName = "1.0.5"
     }
 
     // All debug builds share the committed app/debug.keystore, so every CI
@@ -93,6 +93,15 @@ dependencies {
 
     // Avatar images.
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    // WebRTC audio/video calls (Phase 2, v1.0.5).
+    // NOTE: org.webrtc:google-webrtc is NO LONGER on Maven Central (Google
+    // deprecated the JCenter distribution) — verified 404 on 2026-11-17.
+    // The official replacement is Google's resumed distribution at
+    // github.com/webrtc-sdk/android, published as io.github.webrtc-sdk:android
+    // on Maven Central (POM + AAR verified HTTP 200 for 144.7559.09).
+    // Same org.webrtc.* API, so all standard WebRTC Android code works.
+    implementation("io.github.webrtc-sdk:android:144.7559.09")
 
     debugImplementation("androidx.compose.ui:ui-tooling")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
