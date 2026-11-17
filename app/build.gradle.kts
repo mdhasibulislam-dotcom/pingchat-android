@@ -12,8 +12,22 @@ android {
         applicationId = "com.mdhasibulislam.pingchat"
         minSdk = 24
         targetSdk = 37
-        versionCode = 2
-        versionName = "1.0.1"
+        versionCode = 3
+        versionName = "1.0.2"
+    }
+
+    // All debug builds share the committed app/debug.keystore, so every CI
+    // build is signed with the SAME key and installs as an update over the
+    // previous debug APK. (Without this, each GitHub runner generates its own
+    // debug key and Android refuses to install the new build over the old one.)
+    // This is a DEBUG key only — never use it for a Play Store release.
+    signingConfigs {
+        getByName("debug") {
+            storeFile = file("debug.keystore")
+            storePassword = "android"
+            keyAlias = "androiddebugkey"
+            keyPassword = "android"
+        }
     }
 
     buildTypes {
