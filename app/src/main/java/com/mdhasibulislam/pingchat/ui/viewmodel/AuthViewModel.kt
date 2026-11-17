@@ -3,8 +3,6 @@ package com.mdhasibulislam.pingchat.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mdhasibulislam.pingchat.data.AuthRepository
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -32,7 +30,6 @@ class AuthViewModel : ViewModel() {
 
     private val emailRe = Regex("^[^\\s@]+@[^\\s@]+\\.[^\\s@]{2,}$")
     private val usernameRe = Regex("^[a-z0-9_]{3,20}$")
-    private var usernameCheckJob: Job? = null
 
     companion object {
         /**
@@ -69,7 +66,6 @@ class AuthViewModel : ViewModel() {
     }
 
     fun checkUsername(username: String) {
-        usernameCheckJob?.cancel()
         val v = username.trim().lowercase()
         if (v.isEmpty()) {
             _state.update { it.copy(usernameHint = "3–20 characters: letters, numbers, underscore.", usernameOk = false) }
@@ -79,22 +75,10 @@ class AuthViewModel : ViewModel() {
             _state.update { it.copy(usernameHint = "Use 3–20 letters, numbers or underscores.", usernameOk = false) }
             return
         }
-        _state.update { it.copy(usernameHint = "Checking…", usernameOk = false) }
-        usernameCheckJob = viewModelScope.launch {
-            delay(350)
-            val ok = try {
-                repo.isUsernameAvailable(v)
-            } catch (e: Exception) {
-                _state.update { it.copy(usernameHint = "Could not check username right now.", usernameOk = false) }
-                return@launch
-            }
-            _state.update {
-                it.copy(
-                    usernameHint = if (ok) "@$v is available" else "@$v is already taken",
-                    usernameOk = ok
-                )
-            }
-        }
+        // Availability can only be checked once signed in (the Firestore
+        // rules deny reads to signed-out users), so the real check happens
+        // inside register() — here only the format is validated.
+        _state.update { it.copy(usernameHint = "@$v looks good — availability is checked when you register.", usernameOk = true) }
     }
 
     fun register(name: String, username: String, email: String, password: String, password2: String) {
@@ -108,17 +92,12 @@ class AuthViewModel : ViewModel() {
         }
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
-            val available = try {
-                repo.isUsernameAvailable(uname)
-            } catch (e: Exception) {
-                _state.update { it.copy(loading = false, error = AuthRepository.friendlyError(e)) }
-                return@launch
-            }
-            if (!available) {
-                _state.update { it.copy(loading = false, error = "That username is already taken.") }
-                return@launch
-            }
             try {
+                // signUp creates the account first and checks the username
+                // afterwards (the check needs a signed-in user — checking
+                // before sign-up was always denied and wrongly reported as
+                // "already taken"). If the name is taken, signUp rolls the
+                // new account back and throws.
                 repo.signUp(name.trim(), uname, email.trim(), password)
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = AuthRepository.friendlyError(e)) }
