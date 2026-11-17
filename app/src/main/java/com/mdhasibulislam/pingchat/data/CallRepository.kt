@@ -14,9 +14,12 @@ import kotlinx.coroutines.tasks.await
  * - calls/{callId}: callerId, calleeId, conversationId, kind (audio/video),
  *   status (ringing/accepted/declined/missed/ended), callerName,
  *   offerSdp {type, sdp}, answerSdp {type, sdp}, createdAt, startedAt,
- *   endedAt, durationSeconds (millis timestamps)
+ *   endedAt, durationSeconds (millis timestamps),
+ *   participants [callerId, calleeId] (denormalized for the candidates
+ *   listener — the Firestore rules cannot use get() on the parent call
+ *   during a list query, so membership must live on each document)
  * - calls/{callId}/candidates/{autoId}: senderId, candidate, sdpMid,
- *   sdpMLineIndex
+ *   sdpMLineIndex, participants [callerId, calleeId] (same reason)
  *
  * The callee watches calls where calleeId == me for ringing docs (incoming
  * calls); the caller watches the one call doc for the answer + status, and
@@ -83,7 +86,8 @@ class CallRepository {
                 "createdAt" to nowMillis(),
                 "startedAt" to null,
                 "endedAt" to null,
-                "durationSeconds" to null
+                "durationSeconds" to null,
+                "participants" to listOf(callerId, calleeId)
             )
             db.collection("calls").document(callId).set(data).await()
             callRowFromDoc(callId, data)
@@ -150,6 +154,28 @@ class CallRepository {
         }
     }
 
+    /**
+     * The call's participants, cached per call. Candidate docs carry a
+     * denormalized `participants` array (the Firestore rules cannot use
+     * get() on the parent call during a list query, so membership must
+     * live on each document itself).
+     */
+    private val participantsCache = mutableMapOf<String, List<String>>()
+
+    private suspend fun participantsForCall(callId: String): List<String> {
+        participantsCache[callId]?.let { return it }
+        return try {
+            val snap = db.collection("calls").document(callId).get().await()
+            val caller = snap.getString("callerId")
+            val callee = snap.getString("calleeId")
+            val list = listOfNotNull(caller, callee)
+            if (list.size == 2) participantsCache[callId] = list
+            list
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
     /** One ICE candidate for the peer (goes to the candidates subcollection). */
     suspend fun sendCandidate(callId: String, candidate: IceCandidateJson) {
         val me = myId() ?: return
@@ -159,7 +185,8 @@ class CallRepository {
                     "senderId" to me,
                     "candidate" to candidate.candidate,
                     "sdpMid" to candidate.sdpMid,
-                    "sdpMLineIndex" to candidate.sdpMLineIndex
+                    "sdpMLineIndex" to candidate.sdpMLineIndex,
+                    "participants" to participantsForCall(callId)
                 )
             ).await()
         } catch (e: Exception) {
@@ -272,13 +299,18 @@ class CallRepository {
 
     /** The peer's ICE candidates for one call, in arrival order. */
     fun candidatesFlow(callId: String, peerId: String): Flow<IceCandidatePayload> = callbackFlow {
+        val me = myId() ?: run { close(); return@callbackFlow }
+        // Only the participants filter lives in the query (single field,
+        // auto-indexed); the sender is filtered client-side below so no
+        // composite index is needed.
         val reg = db.collection("calls").document(callId)
             .collection("candidates")
-            .whereEqualTo("senderId", peerId)
+            .whereArrayContains("participants", me)
             .addSnapshotListener { snap, _ ->
                 snap?.documentChanges?.forEach { change ->
                     if (change.type != DocumentChange.Type.ADDED) return@forEach
                     val data = change.document.data
+                    if (data["senderId"] as? String != peerId) return@forEach
                     val candidate = data["candidate"] as? String ?: return@forEach
                     trySend(
                         IceCandidatePayload(
