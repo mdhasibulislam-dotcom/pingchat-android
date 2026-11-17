@@ -12,6 +12,7 @@ data class Profile(
     @SerialName("bio") val bio: String? = null,
     @SerialName("avatar_url") val avatarUrl: String? = null,
     @SerialName("phone") val phone: String? = null,
+    @SerialName("fcm_token") val fcmToken: String? = null,
     @SerialName("is_public") val isPublic: Boolean = true,
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = ""
@@ -172,6 +173,7 @@ fun profileFromDoc(id: String, data: Map<String, Any?>): Profile = Profile(
     bio = data["bio"] as? String,
     avatarUrl = data["avatarUrl"] as? String,
     phone = data["phone"] as? String,
+    fcmToken = data["fcmToken"] as? String,
     isPublic = data["isPublic"] as? Boolean ?: true,
     createdAt = millisToIsoOrEmpty(data["createdAt"] as? Long),
     updatedAt = millisToIsoOrEmpty(data["updatedAt"] as? Long)

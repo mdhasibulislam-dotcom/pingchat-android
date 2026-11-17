@@ -252,6 +252,16 @@ object CallManager {
             endCallInternal(null)
             return "Could not reach the other side. Check your connection and try again."
         }
+        // WhatsApp-style ring: push the callee even if the app is closed.
+        peer.fcmToken?.let { token ->
+            scope.launch {
+                PushSender.sendPush(
+                    token, myName,
+                    if (kind == "video") "Incoming video call" else "Incoming voice call",
+                    mapOf("type" to "call", "callId" to callId, "kind" to kind)
+                )
+            }
+        }
         startNoAnswerTimer(callId)
         return null
     }
