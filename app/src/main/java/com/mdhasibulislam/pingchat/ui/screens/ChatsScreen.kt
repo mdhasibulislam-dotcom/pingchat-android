@@ -239,6 +239,7 @@ private fun ConversationRow(
     val last = item.lastMessage
     val preview = when {
         last == null -> "No messages yet — say hello."
+        last.kind == "photo" -> (if (last.senderId == myId) "You: " else "") + "Photo"
         last.kind == "voice" -> (if (last.senderId == myId) "You: " else "") + "Voice message"
         last.senderId == myId -> "You: ${last.body}"
         else -> last.body

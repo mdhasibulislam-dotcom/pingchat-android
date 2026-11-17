@@ -1,6 +1,7 @@
 package com.mdhasibulislam.pingchat.ui.screens
 
 import androidx.compose.foundation.background
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -13,12 +14,12 @@ import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.DarkMode
 import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.People
-import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Group
-import androidx.compose.material.icons.outlined.PersonOutline
+import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -45,6 +46,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mdhasibulislam.pingchat.data.FriendState
+import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.data.Profile
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.ui.components.Avatar
@@ -55,16 +57,19 @@ import com.mdhasibulislam.pingchat.ui.viewmodel.ChatsViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.PeopleViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
 
-/** Main app shell: top bar + bottom tabs (Chats / Calls / People / Profile). */
+/** Main app shell: top bar + bottom tabs (Chats / Calls / People / Settings).
+ *  The top-bar avatar opens my Profile; the bottom bar's last tab is Settings. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun MainScreen(
     onOpenChat: (String) -> Unit,
     onSettingsClick: () -> Unit,
     darkTheme: Boolean,
-    onDarkThemeChange: (Boolean) -> Unit
+    onDarkThemeChange: (Boolean) -> Unit,
+    prefs: Prefs
 ) {
     var tab by remember { mutableIntStateOf(0) }
+    var showProfile by remember { mutableStateOf(false) }
     val chatsViewModel: ChatsViewModel = viewModel()
     val peopleViewModel: PeopleViewModel = viewModel()
     val profileViewModel: ProfileViewModel = viewModel()
@@ -110,7 +115,9 @@ fun MainScreen(
                     Avatar(
                         profile = myProfile,
                         size = AvatarSize.SM,
-                        modifier = Modifier.padding(end = 8.dp)
+                        modifier = Modifier
+                            .padding(end = 8.dp)
+                            .clickable { showProfile = true }
                     )
                 }
             )
@@ -133,8 +140,8 @@ fun MainScreen(
                         unselectedTextColor = colors.muted
                     )
                     NavigationBarItem(
-                        selected = tab == 0,
-                        onClick = { tab = 0 },
+                        selected = tab == 0 && !showProfile,
+                        onClick = { tab = 0; showProfile = false },
                         icon = {
                             Icon(
                                 if (tab == 0) Icons.Default.ChatBubble else Icons.Outlined.ChatBubbleOutline,
@@ -150,8 +157,8 @@ fun MainScreen(
                         colors = navColors
                     )
                     NavigationBarItem(
-                        selected = tab == 1,
-                        onClick = { tab = 1 },
+                        selected = tab == 1 && !showProfile,
+                        onClick = { tab = 1; showProfile = false },
                         icon = {
                             Icon(
                                 if (tab == 1) Icons.Default.Phone else Icons.Outlined.Call,
@@ -167,8 +174,8 @@ fun MainScreen(
                         colors = navColors
                     )
                     NavigationBarItem(
-                        selected = tab == 2,
-                        onClick = { tab = 2 },
+                        selected = tab == 2 && !showProfile,
+                        onClick = { tab = 2; showProfile = false },
                         icon = {
                             Icon(
                                 if (tab == 2) Icons.Default.People else Icons.Outlined.Group,
@@ -184,17 +191,17 @@ fun MainScreen(
                         colors = navColors
                     )
                     NavigationBarItem(
-                        selected = tab == 3,
-                        onClick = { tab = 3 },
+                        selected = tab == 3 && !showProfile,
+                        onClick = { tab = 3; showProfile = false },
                         icon = {
                             Icon(
-                                if (tab == 3) Icons.Default.Person else Icons.Outlined.PersonOutline,
-                                contentDescription = "Profile"
+                                if (tab == 3) Icons.Default.Settings else Icons.Outlined.Settings,
+                                contentDescription = "Settings"
                             )
                         },
                         label = {
                             Text(
-                                "Profile",
+                                "Settings",
                                 fontWeight = if (tab == 3) FontWeight.Bold else FontWeight.Normal
                             )
                         },
@@ -205,7 +212,9 @@ fun MainScreen(
         }
     ) { padding ->
         Box(modifier = Modifier.padding(padding)) {
-            when (tab) {
+            if (showProfile) {
+                ProfileScreen(profileViewModel, onSettingsClick = { showProfile = false; tab = 3 })
+            } else when (tab) {
                 0 -> ChatsScreen(chatsViewModel, onOpenChat)
                 1 -> CallsScreen()
                 2 -> PeopleScreen(
@@ -213,7 +222,12 @@ fun MainScreen(
                     onOpenChat = onOpenChat,
                     onPreview = { profile, state -> preview = profile to state }
                 )
-                3 -> ProfileScreen(profileViewModel, onSettingsClick)
+                3 -> SettingsScreen(
+                    viewModel = profileViewModel,
+                    prefs = prefs,
+                    darkTheme = darkTheme,
+                    onDarkThemeChange = onDarkThemeChange
+                )
             }
         }
     }

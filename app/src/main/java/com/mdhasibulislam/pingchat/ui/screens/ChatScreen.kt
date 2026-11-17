@@ -1,8 +1,15 @@
 package com.mdhasibulislam.pingchat.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.net.Uri
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -19,26 +26,35 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Mic
-import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.Pause
+import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material3.Dialog
+import androidx.compose.material3.DialogProperties
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
@@ -52,7 +68,9 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
@@ -60,11 +78,14 @@ import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.Lifecycle
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
+import coil.compose.AsyncImage
+import java.io.File
 import com.mdhasibulislam.pingchat.data.ChatMessage
 import com.mdhasibulislam.pingchat.data.FriendState
 import com.mdhasibulislam.pingchat.data.Profile
@@ -127,18 +148,64 @@ fun ChatScreen(
     val error by viewModel.error.collectAsState()
     val replyTo by viewModel.replyTo.collectAsState()
     val deliveredIds by viewModel.deliveredIds.collectAsState()
+    val recording by viewModel.recording.collectAsState()
+    val recordingSeconds by viewModel.recordingSeconds.collectAsState()
+    val playingMessageId by viewModel.playingMessageId.collectAsState()
+    val voiceDurations by viewModel.voiceDurations.collectAsState()
     val onlineIds by SessionManager.onlineIds.collectAsState()
     val myId = viewModel.myId
     val colors = pingChatColors
 
     val peerOnline = peer?.let { onlineIds.contains(it.id) } ?: false
     val clipboard = LocalClipboardManager.current
+    val context = LocalContext.current
     val listState = rememberLazyListState()
     var input by remember { mutableStateOf("") }
     var menuMessage by remember { mutableStateOf<ChatMessage?>(null) }
-    var showOverflow by remember { mutableStateOf(false) }
     var confirmClear by remember { mutableStateOf(false) }
     var showProfile by remember { mutableStateOf(false) }
+    var viewingPhoto by remember { mutableStateOf<ChatMessage?>(null) }
+
+    // Gallery picker (photo only — no video, no camera in this version).
+    val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
+        if (uri == null) return@rememberLauncherForActivityResult
+        val bytes = try {
+            context.contentResolver.openInputStream(uri)?.use { it.readBytes() }
+        } catch (e: Exception) {
+            null
+        } ?: return@rememberLauncherForActivityResult
+        val mime = context.contentResolver.getType(uri) ?: "image/jpeg"
+        viewModel.sendPhoto(bytes, mime)
+    }
+
+    // Mic permission, then start recording into a temp file.
+    val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+        if (granted) {
+            viewModel.startRecording(File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a"))
+        } else {
+            Toast.makeText(
+                context,
+                "Microphone permission is needed to record voice messages.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+    fun requestMicAndRecord() {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            viewModel.startRecording(File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a"))
+        } else {
+            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    // Opening a photo as the recipient consumes it (view-once): the row
+    // is deleted from the database. The ViewModel guards the sender.
+    LaunchedEffect(viewingPhoto) {
+        val v = viewingPhoto
+        if (v != null) viewModel.consumeViewOnce(v)
+    }
 
     // Seen only counts when the user is actually looking at the chat.
     val lifecycleOwner = LocalLifecycleOwner.current
@@ -171,7 +238,8 @@ fun ChatScreen(
     }
 
     Column(modifier = Modifier.fillMaxSize()) {
-        // Header: back, avatar + online dot, name, Online/Offline, overflow menu.
+        // Header, Messenger-style: back, avatar + name + status,
+        // audio call, video call, info (profile). Calls land in the next update.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -198,26 +266,18 @@ fun ChatScreen(
                     color = if (peerOnline) colors.text else colors.muted
                 )
             }
-            Box {
-                IconButton(onClick = { showOverflow = true }) {
-                    Icon(Icons.Default.MoreVert, contentDescription = "More", tint = colors.text)
-                }
-                DropdownMenu(expanded = showOverflow, onDismissRequest = { showOverflow = false }) {
-                    DropdownMenuItem(
-                        text = { Text("View profile") },
-                        onClick = {
-                            showOverflow = false
-                            showProfile = true
-                        }
-                    )
-                    DropdownMenuItem(
-                        text = { Text("Clear chat") },
-                        onClick = {
-                            showOverflow = false
-                            confirmClear = true
-                        }
-                    )
-                }
+            IconButton(onClick = {
+                Toast.makeText(context, "Audio calls are coming in the next update.", Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(Icons.Default.Phone, contentDescription = "Audio call", tint = colors.text)
+            }
+            IconButton(onClick = {
+                Toast.makeText(context, "Video calls are coming in the next update.", Toast.LENGTH_SHORT).show()
+            }) {
+                Icon(Icons.Default.Videocam, contentDescription = "Video call", tint = colors.text)
+            }
+            IconButton(onClick = { showProfile = true }) {
+                Icon(Icons.Default.Info, contentDescription = "Chat info", tint = colors.text)
             }
         }
 
@@ -279,9 +339,24 @@ fun ChatScreen(
                             replyTo = replyTarget,
                             reactions = reactions[m.id].orEmpty(),
                             onLongPress = { menuMessage = m },
-                            onReactionChipClick = { emoji -> viewModel.toggleReaction(m.id, emoji) }
+                            onReactionChipClick = { emoji -> viewModel.toggleReaction(m.id, emoji) },
+                            onPhotoClick = { viewingPhoto = it },
+                            onVoiceClick = { viewModel.playVoice(it) },
+                            playing = playingMessageId == m.id,
+                            voiceDurationSec = voiceDurations[m.id]
                         )
                     }
+                }
+            }
+            // Messenger-style intro card at the very top of the chat.
+            val introPeer = peer
+            if (introPeer != null) {
+                item(key = "intro-${introPeer.id}") {
+                    ChatIntroCard(
+                        peer = introPeer,
+                        online = peerOnline,
+                        onViewProfile = { showProfile = true }
+                    )
                 }
             }
         }
@@ -312,7 +387,7 @@ fun ChatScreen(
                         color = colors.text
                     )
                     Text(
-                        replyTo!!.body,
+                        replyPreview(replyTo!!),
                         style = MaterialTheme.typography.bodySmall,
                         color = colors.muted,
                         maxLines = 1,
@@ -325,7 +400,8 @@ fun ChatScreen(
             }
         }
 
-        // Composer.
+        // Composer, Messenger-style: [+] attach (gallery photo only),
+        // pill-shaped grey text field, mic to record / send when typing.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -333,34 +409,85 @@ fun ChatScreen(
                 .padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            OutlinedTextField(
-                value = input,
-                onValueChange = {
-                    input = it
-                    if (it.isNotBlank()) viewModel.onTyping() else viewModel.onTypingStopped()
-                },
-                placeholder = { Text("Type a message…") },
-                singleLine = false,
-                maxLines = 4,
-                keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
-                modifier = Modifier.weight(1f)
-            )
-            Spacer(Modifier.width(8.dp))
-            IconButton(
-                onClick = {
-                    viewModel.send(input)
-                    input = ""
-                },
-                enabled = input.isNotBlank() && !sending
-            ) {
-                if (sending) {
-                    CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-                } else {
-                    Icon(
-                        Icons.AutoMirrored.Filled.Send,
-                        contentDescription = "Send",
-                        tint = if (input.isNotBlank()) colors.text else colors.muted
+            IconButton(onClick = { photoPicker.launch("image/*") }) {
+                Icon(Icons.Default.Add, contentDescription = "Send a photo", tint = colors.text)
+            }
+            if (recording) {
+                // Recording in progress: red dot + timer; tap stop to send.
+                Row(
+                    modifier = Modifier
+                        .weight(1f)
+                        .clip(RoundedCornerShape(50))
+                        .background(colors.inputBg)
+                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(10.dp)
+                            .clip(CircleShape)
+                            .background(Color.Red)
                     )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Recording ${recordingSeconds / 60}:${(recordingSeconds % 60).toString().padStart(2, '0')}",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.text
+                    )
+                }
+                Spacer(Modifier.width(8.dp))
+                IconButton(onClick = { viewModel.stopRecordingAndSend() }) {
+                    Icon(Icons.Default.Stop, contentDescription = "Stop and send", tint = Color.Red)
+                }
+            } else {
+                TextField(
+                    value = input,
+                    onValueChange = {
+                        input = it
+                        if (it.isNotBlank()) viewModel.onTyping() else viewModel.onTypingStopped()
+                    },
+                    placeholder = { Text("Type a message…") },
+                    singleLine = false,
+                    maxLines = 4,
+                    keyboardOptions = KeyboardOptions(capitalization = KeyboardCapitalization.Sentences),
+                    shape = RoundedCornerShape(50),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = colors.inputBg,
+                        unfocusedContainerColor = colors.inputBg,
+                        disabledContainerColor = colors.inputBg,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+                Spacer(Modifier.width(8.dp))
+                if (input.isNotBlank()) {
+                    IconButton(
+                        onClick = {
+                            viewModel.send(input)
+                            input = ""
+                        },
+                        enabled = !sending
+                    ) {
+                        if (sending) {
+                            CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+                        } else {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send",
+                                tint = colors.text
+                            )
+                        }
+                    }
+                } else {
+                    IconButton(onClick = { requestMicAndRecord() }) {
+                        Icon(
+                            Icons.Default.Mic,
+                            contentDescription = "Record a voice message",
+                            tint = colors.text
+                        )
+                    }
                 }
             }
         }
@@ -435,8 +562,88 @@ fun ChatScreen(
                 onCancelRequest = {},
                 onAccept = {},
                 onDecline = {},
-                onDismiss = { showProfile = false }
+                onDismiss = { showProfile = false },
+                onClearChat = { showProfile = false; confirmClear = true }
             )
+        }
+    }
+
+    // Fullscreen view-once photo viewer. Opening it as the recipient
+    // already triggered consume (see LaunchedEffect above), so the row
+    // disappears from the chat; tap anywhere to close.
+    val viewing = viewingPhoto
+    if (viewing != null && !viewing.mediaUrl.isNullOrBlank()) {
+        Dialog(
+            onDismissRequest = { viewingPhoto = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black)
+                    .clickable { viewingPhoto = null },
+                contentAlignment = Alignment.Center
+            ) {
+                AsyncImage(
+                    model = viewing.mediaUrl,
+                    contentDescription = "Photo",
+                    modifier = Modifier.fillMaxSize(),
+                    contentScale = ContentScale.Fit
+                )
+                IconButton(
+                    onClick = { viewingPhoto = null },
+                    modifier = Modifier
+                        .align(Alignment.TopEnd)
+                        .padding(16.dp)
+                ) {
+                    Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                }
+            }
+        }
+    }
+}
+
+/** Short preview text for a replied-to message (photo/voice have no body). */
+private fun replyPreview(message: ChatMessage): String =
+    message.body.ifBlank {
+        when (message.kind) {
+            "photo" -> "Photo"
+            "voice" -> "Voice message"
+            else -> ""
+        }
+    }
+
+/** Messenger-style intro card at the top of a chat: big photo, name, @username. */
+@Composable
+private fun ChatIntroCard(peer: Profile, online: Boolean, onViewProfile: () -> Unit) {
+    val colors = pingChatColors
+    Column(
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(vertical = 24.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        Avatar(profile = peer, size = AvatarSize.LG, online = online)
+        Spacer(Modifier.height(12.dp))
+        Text(
+            text = peer.fullName.ifBlank { peer.username },
+            style = MaterialTheme.typography.titleLarge,
+            color = colors.text
+        )
+        Text(
+            text = "@${peer.username}",
+            style = MaterialTheme.typography.bodyMedium,
+            color = colors.muted
+        )
+        Spacer(Modifier.height(4.dp))
+        Text(
+            text = "You're friends on PingChat",
+            style = MaterialTheme.typography.bodySmall,
+            color = colors.muted
+        )
+        Spacer(Modifier.height(12.dp))
+        Button(onClick = onViewProfile) {
+            Text("View profile")
         }
     }
 }
@@ -468,7 +675,11 @@ private fun MessageBubble(
     replyTo: ChatMessage?,
     reactions: List<Reaction>,
     onLongPress: () -> Unit,
-    onReactionChipClick: (String) -> Unit
+    onReactionChipClick: (String) -> Unit,
+    onPhotoClick: (ChatMessage) -> Unit,
+    onVoiceClick: (ChatMessage) -> Unit,
+    playing: Boolean,
+    voiceDurationSec: Int?
 ) {
     val colors = pingChatColors
     Column(
@@ -484,7 +695,12 @@ private fun MessageBubble(
                     if (mine) Modifier
                     else Modifier.border(1.dp, colors.border, RoundedCornerShape(16.dp))
                 )
-                .combinedClickable(onClick = {}, onLongClick = onLongPress)
+                // Tap a photo bubble to view it fullscreen; long-press
+                // still opens the menu (React / Reply / Delete).
+                .combinedClickable(
+                    onClick = { if (message.kind == "photo") onPhotoClick(message) },
+                    onLongClick = onLongPress
+                )
                 .padding(horizontal = 12.dp, vertical = 8.dp)
         ) {
             Column {
@@ -498,7 +714,7 @@ private fun MessageBubble(
                             .padding(horizontal = 8.dp, vertical = 4.dp)
                     ) {
                         Text(
-                            text = replyTo.body,
+                            text = replyPreview(replyTo),
                             style = MaterialTheme.typography.bodySmall,
                             color = if (mine) Color.White.copy(alpha = 0.9f) else colors.muted,
                             maxLines = 2,
@@ -507,37 +723,75 @@ private fun MessageBubble(
                     }
                     Spacer(Modifier.height(4.dp))
                 }
-                if (message.kind == "voice") {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Icon(
-                            Icons.Default.Mic,
-                            contentDescription = null,
-                            tint = if (mine) Color.White else colors.muted,
-                            modifier = Modifier.size(18.dp)
-                        )
-                        Spacer(Modifier.width(6.dp))
-                        Text(
-                            text = "Voice message",
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (mine) Color.White else colors.text
-                        )
-                    }
-                    Text(
-                        text = "Playback comes in the next update.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = if (mine) Color.White.copy(alpha = 0.8f) else colors.muted
-                    )
-                } else {
-                    Row(verticalAlignment = Alignment.Bottom) {
-                        Text(
-                            text = message.body,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = if (mine) Color.White else colors.text,
-                            modifier = Modifier.weight(1f, fill = false)
-                        )
+                when (message.kind) {
+                    "photo" -> {
+                        if (!message.mediaUrl.isNullOrBlank()) {
+                            AsyncImage(
+                                model = message.mediaUrl,
+                                contentDescription = "Photo",
+                                modifier = Modifier
+                                    .widthIn(max = 240.dp)
+                                    .height(180.dp)
+                                    .clip(RoundedCornerShape(12.dp)),
+                                contentScale = ContentScale.Crop
+                            )
+                        } else {
+                            Text(
+                                text = "Photo",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (mine) Color.White else colors.text
+                            )
+                        }
                         if (mine && tickState != null) {
-                            Spacer(Modifier.width(6.dp))
-                            TickIcon(state = tickState, onBubble = true)
+                            Spacer(Modifier.height(4.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.End
+                            ) {
+                                TickIcon(state = tickState, onBubble = true)
+                            }
+                        }
+                    }
+                    "voice" -> {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            IconButton(
+                                onClick = { onVoiceClick(message) },
+                                modifier = Modifier.size(36.dp)
+                            ) {
+                                Icon(
+                                    if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
+                                    contentDescription = if (playing) "Stop" else "Play voice message",
+                                    tint = if (mine) Color.White else colors.text
+                                )
+                            }
+                            Text(
+                                text = "Voice message" + if (voiceDurationSec != null) {
+                                    " • ${voiceDurationSec / 60}:${(voiceDurationSec % 60).toString().padStart(2, '0')}"
+                                } else {
+                                    ""
+                                },
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (mine) Color.White else colors.text,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (mine && tickState != null) {
+                                Spacer(Modifier.width(6.dp))
+                                TickIcon(state = tickState, onBubble = true)
+                            }
+                        }
+                    }
+                    else -> {
+                        Row(verticalAlignment = Alignment.Bottom) {
+                            Text(
+                                text = message.body,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = if (mine) Color.White else colors.text,
+                                modifier = Modifier.weight(1f, fill = false)
+                            )
+                            if (mine && tickState != null) {
+                                Spacer(Modifier.width(6.dp))
+                                TickIcon(state = tickState, onBubble = true)
+                            }
                         }
                     }
                 }

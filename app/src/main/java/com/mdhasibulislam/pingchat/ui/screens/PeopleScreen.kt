@@ -14,6 +14,7 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.AlertDialog
@@ -22,11 +23,12 @@ import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Tab
 import androidx.compose.material3.TabRow
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -37,6 +39,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.mdhasibulislam.pingchat.data.FriendState
@@ -95,12 +98,22 @@ fun PeopleScreen(
             }
             if (loading) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
         }
-        OutlinedTextField(
+        // Messenger-style pill search: rounded, grey fill, no outline.
+        TextField(
             value = query,
             onValueChange = { query = it },
             placeholder = { Text("Search people") },
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = colors.muted) },
             singleLine = true,
+            shape = RoundedCornerShape(50),
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = colors.inputBg,
+                unfocusedContainerColor = colors.inputBg,
+                disabledContainerColor = colors.inputBg,
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+                disabledIndicatorColor = Color.Transparent
+            ),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp)
@@ -265,7 +278,8 @@ fun ProfilePreviewDialog(
     onCancelRequest: () -> Unit,
     onAccept: () -> Unit,
     onDecline: () -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    onClearChat: (() -> Unit)? = null
 ) {
     val colors = pingChatColors
     val memberSince = remember(profile.createdAt) {
@@ -325,6 +339,11 @@ fun ProfilePreviewDialog(
                         FriendState.PENDING_IN -> {
                             Button(onClick = onAccept) { Text("Accept") }
                             OutlinedButton(onClick = onDecline) { Text("Decline") }
+                        }
+                    }
+                    if (onClearChat != null) {
+                        TextButton(onClick = onClearChat) {
+                            Text("Clear chat", color = MaterialTheme.colorScheme.error)
                         }
                     }
                 }
