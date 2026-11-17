@@ -1,5 +1,7 @@
 package com.mdhasibulislam.pingchat.ui.viewmodel
 
+import android.media.MediaPlayer
+import android.media.MediaRecorder
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mdhasibulislam.pingchat.data.AuthRepository
@@ -12,6 +14,7 @@ import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.TickState
 import com.mdhasibulislam.pingchat.data.TypingPayload
 import io.github.jan.supabase.realtime.RealtimeChannel
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -19,6 +22,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import java.io.File
 
 /**
  * One open 1-to-1 chat: messages, read ticks, typing, reactions, deletes.
@@ -47,6 +52,21 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     private val _sending = MutableStateFlow(false)
     val sending: StateFlow<Boolean> = _sending.asStateFlow()
 
+    /** Voice recording in progress (mic held). Max 120s, then auto-send. */
+    private val _recording = MutableStateFlow(false)
+    val recording: StateFlow<Boolean> = _recording.asStateFlow()
+
+    private val _recordingSeconds = MutableStateFlow(0)
+    val recordingSeconds: StateFlow<Int> = _recordingSeconds.asStateFlow()
+
+    /** Id of the voice message currently playing (null = none). */
+    private val _playingMessageId = MutableStateFlow<String?>(null)
+    val playingMessageId: StateFlow<String?> = _playingMessageId.asStateFlow()
+
+    /** Known voice durations in seconds, by message id. */
+    private val _voiceDurations = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val voiceDurations: StateFlow<Map<String, Int>> = _voiceDurations.asStateFlow()
+
     private val _error = MutableStateFlow<String?>(null)
     val error: StateFlow<String?> = _error.asStateFlow()
 
@@ -71,6 +91,15 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     private var typingDebounceJob: Job? = null
     private var typingLastSentAt = 0L
     private var visible = false
+
+    // View-once media: recorder + player live here so a rotation or a
+    // re-render never loses them. Consumed ids guard double-consume.
+    private var recorder: MediaRecorder? = null
+    private var recordingFile: File? = null
+    private var recordingJob: Job? = null
+    private var player: MediaPlayer? = null
+    private var playingId: String? = null
+    private val consumedIds = mutableSetOf<String>()
 
     init {
         viewModelScope.launch {
@@ -137,6 +166,162 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
                 loadMessages()
             }
             _sending.value = false
+        }
+    }
+
+    /** Send a view-once photo picked from the gallery. */
+    fun sendPhoto(bytes: ByteArray, mime: String) {
+        if (_sending.value) return
+        viewModelScope.launch {
+            _sending.value = true
+            val sent = repo.sendPhoto(conversationId, bytes, mime)
+            if (sent != null) {
+                _messages.update { it + sent }
+            } else {
+                _error.value = "Could not send photo. Check your connection and try again."
+            }
+            _sending.value = false
+        }
+    }
+
+    // ---------- view-once voice: record + play ----------
+
+    /** Start recording a voice message into outputFile (max 120s, then auto-send). */
+    @Suppress("DEPRECATION")
+    fun startRecording(outputFile: File) {
+        if (_recording.value) return
+        try {
+            val rec = MediaRecorder()
+            rec.setAudioSource(MediaRecorder.AudioSource.MIC)
+            rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
+            rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
+            rec.setOutputFile(outputFile.absolutePath)
+            rec.prepare()
+            rec.start()
+            recorder = rec
+            recordingFile = outputFile
+            _recording.value = true
+            _recordingSeconds.value = 0
+            recordingJob = viewModelScope.launch {
+                while (true) {
+                    delay(1000)
+                    val next = _recordingSeconds.value + 1
+                    _recordingSeconds.value = next
+                    if (next >= 120) {
+                        stopRecordingAndSend()
+                        break
+                    }
+                }
+            }
+        } catch (e: Exception) {
+            _error.value = "Could not start recording. Check the microphone permission and try again."
+        }
+    }
+
+    /** Stop recording and send the voice message (view-once). */
+    fun stopRecordingAndSend() {
+        val rec = recorder ?: return
+        recorder = null
+        recordingJob?.cancel()
+        recordingJob = null
+        _recording.value = false
+        val file = recordingFile
+        recordingFile = null
+        viewModelScope.launch {
+            val bytes = try {
+                rec.stop()
+                rec.release()
+                withContext(Dispatchers.IO) { file?.readBytes() }
+            } catch (e: Exception) {
+                try {
+                    rec.release()
+                } catch (_: Exception) {
+                }
+                null
+            }
+            file?.delete()
+            if (bytes == null || bytes.isEmpty()) {
+                _error.value = "Could not record voice message. Try again."
+                return@launch
+            }
+            _sending.value = true
+            val sent = repo.sendVoice(conversationId, bytes)
+            if (sent != null) {
+                _messages.update { it + sent }
+            } else {
+                _error.value = "Could not send voice message. Check your connection and try again."
+            }
+            _sending.value = false
+        }
+    }
+
+    /** Play a voice message (tap again to stop). A full listen consumes it. */
+    fun playVoice(message: ChatMessage) {
+        val url = message.mediaUrl
+        if (url.isNullOrBlank()) return
+        if (playingId == message.id) {
+            stopPlayback()
+            return
+        }
+        stopPlayback()
+        try {
+            val mp = MediaPlayer()
+            playingId = message.id
+            _playingMessageId.value = message.id
+            mp.setDataSource(url)
+            mp.setOnPreparedListener {
+                _voiceDurations.update { it + (message.id to (mp.duration / 1000)) }
+                mp.start()
+            }
+            mp.setOnCompletionListener {
+                stopPlayback()
+                // Full listen: view-once consume (recipient only).
+                consumeViewOnce(message)
+            }
+            mp.setOnErrorListener { _, _, _ ->
+                stopPlayback()
+                true
+            }
+            player = mp
+            mp.prepareAsync()
+        } catch (e: Exception) {
+            stopPlayback()
+            _error.value = "Could not play voice message."
+        }
+    }
+
+    fun stopPlayback() {
+        playingId = null
+        _playingMessageId.value = null
+        try {
+            player?.release()
+        } catch (_: Exception) {
+        }
+        player = null
+    }
+
+    /**
+     * View-once consume: the recipient opening a photo or finishing a
+     * voice message deletes the row from the database (via the RPC,
+     * which refuses the sender / already-consumed / non-participant).
+     * Never consumes my own sent media.
+     */
+    fun consumeViewOnce(message: ChatMessage) {
+        if (!message.viewOnce) return
+        if (message.senderId == myId) return
+        if (!consumedIds.add(message.id)) return
+        viewModelScope.launch {
+            if (repo.consumeMessage(message.id)) {
+                _messages.update { list -> list.filterNot { it.id == message.id } }
+                val path = message.mediaPath
+                if (path != null) {
+                    // Let the fullscreen photo finish loading from its URL
+                    // before the file disappears from Storage.
+                    delay(5000)
+                    val bucket = if (message.kind == "photo") "chat-photos" else "voice-messages"
+                    repo.deleteMedia(bucket, path)
+                }
+            }
         }
     }
 
@@ -288,6 +473,13 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     }
 
     override fun onCleared() {
+        recordingJob?.cancel()
+        try {
+            recorder?.release()
+        } catch (_: Exception) {
+        }
+        recorder = null
+        stopPlayback()
         val room = roomChannel
         val typing = typingChannel
         roomChannel = null
