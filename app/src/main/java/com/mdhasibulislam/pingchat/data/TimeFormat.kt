@@ -71,6 +71,19 @@ object TimeFormat {
         return "$day at ${fmtTime(iso)}"
     }
 
+    /** WhatsApp-style day pill: "Today" / "Yesterday" / "18 Nov" / "18 Nov 2026". */
+    fun dayLabelWhatsApp(iso: String?): String {
+        val t = parse(iso) ?: return ""
+        val date = t.atZone(zone).toLocalDate()
+        val today = Instant.now().atZone(zone).toLocalDate()
+        return when {
+            date == today -> "Today"
+            date == today.minusDays(1) -> "Yesterday"
+            date.year == today.year -> dayShortFmt.format(date)
+            else -> DateTimeFormatter.ofPattern("d MMM yyyy", Locale.US).format(date)
+        }
+    }
+
     fun isSameDay(a: String?, b: String?): Boolean {
         val ta = parse(a) ?: return false
         val tb = parse(b) ?: return false
