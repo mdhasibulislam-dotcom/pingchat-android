@@ -240,11 +240,11 @@ fun ChatScreen(
         }
     }
     fun requestCall(kind: String) {
+        // WhatsApp-style: always let the call go out — if the other side
+        // does not answer in 30s it is marked missed. Never block on the
+        // online dot: presence can lag a moment, and the peer may be right
+        // there with the app open.
         val p = viewModel.peer.value ?: return
-        if (!SessionManager.onlineIds.value.contains(p.id)) {
-            Toast.makeText(context, "They are offline.", Toast.LENGTH_SHORT).show()
-            return
-        }
         val needed = arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
         if (needed.all {
                 ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
