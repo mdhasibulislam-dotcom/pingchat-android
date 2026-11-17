@@ -12,8 +12,8 @@ android {
         applicationId = "com.mdhasibulislam.pingchat"
         minSdk = 24
         targetSdk = 37
-        versionCode = 1
-        versionName = "1.0.0"
+        versionCode = 2
+        versionName = "1.0.1"
     }
 
     buildTypes {
@@ -61,6 +61,10 @@ dependencies {
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 
     // Supabase (Auth + Database + Realtime + Storage) — same project as the web app.
+    // Ktor needs a real HTTP engine on Android: without ktor-client-okhttp the
+    // Supabase client crashes at startup ("Failed to find HTTP client engine").
+    // Version must match the Ktor version supabase-kt 3.9.0 uses (3.6.0).
+    implementation("io.ktor:ktor-client-okhttp:3.6.0")
     implementation("io.github.jan-tennert.supabase:auth-kt:3.9.0")
     implementation("io.github.jan-tennert.supabase:postgrest-kt:3.9.0")
     implementation("io.github.jan-tennert.supabase:realtime-kt:3.9.0")
