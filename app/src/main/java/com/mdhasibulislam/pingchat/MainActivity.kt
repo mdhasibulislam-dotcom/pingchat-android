@@ -2,8 +2,10 @@ package com.mdhasibulislam.pingchat
 
 import android.content.Intent
 import android.os.Bundle
+import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.material3.Surface
 import androidx.compose.runtime.LaunchedEffect
@@ -21,17 +23,21 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
+import com.mdhasibulislam.pingchat.data.CallManager
 import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.Supabase
+import com.mdhasibulislam.pingchat.ui.screens.ActiveCallScreen
 import com.mdhasibulislam.pingchat.ui.screens.ChatScreen
 import com.mdhasibulislam.pingchat.ui.screens.ForgotPasswordScreen
+import com.mdhasibulislam.pingchat.ui.screens.IncomingCallDialog
 import com.mdhasibulislam.pingchat.ui.screens.LoginScreen
 import com.mdhasibulislam.pingchat.ui.screens.MainScreen
 import com.mdhasibulislam.pingchat.ui.screens.RegisterScreen
 import com.mdhasibulislam.pingchat.ui.screens.SettingsScreen
 import com.mdhasibulislam.pingchat.ui.theme.PingChatTheme
 import com.mdhasibulislam.pingchat.ui.viewmodel.AuthViewModel
+import com.mdhasibulislam.pingchat.ui.viewmodel.CallViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
 
 class MainActivity : ComponentActivity() {
@@ -61,6 +67,17 @@ class MainActivity : ComponentActivity() {
                 SessionManager.start()
             }
 
+            // Calls: subscribe to my calls:<myId> channel when signed in
+            // (so incoming calls ring), unsubscribe on sign-out.
+            val currentUser by SessionManager.user.collectAsState()
+            LaunchedEffect(isLoggedIn, currentUser?.id) {
+                if (isLoggedIn == true && currentUser != null) {
+                    CallManager.start(applicationContext, currentUser!!.id, prefs)
+                } else if (isLoggedIn == false) {
+                    CallManager.stop()
+                }
+            }
+
             // Route the user to the right screen when the session state changes.
             LaunchedEffect(isLoggedIn) {
                 when (isLoggedIn) {
@@ -84,6 +101,21 @@ class MainActivity : ComponentActivity() {
 
             PingChatTheme(darkTheme = darkTheme) {
                 Surface(modifier = Modifier.fillMaxSize()) {
+                    // Call overlays sit above every screen (chats, tabs,
+                    // auth): an incoming call must ring even while the
+                    // user is inside a chat, and the in-call screen must
+                    // cover the tab bar.
+                    val callViewModel: CallViewModel = viewModel()
+                    val incomingCall by callViewModel.incoming.collectAsState()
+                    val activeCall by callViewModel.session.collectAsState()
+                    val callError by callViewModel.error.collectAsState()
+                    LaunchedEffect(callError) {
+                        if (callError != null) {
+                            Toast.makeText(applicationContext, callError, Toast.LENGTH_SHORT).show()
+                            callViewModel.clearError()
+                        }
+                    }
+                    Box(modifier = Modifier.fillMaxSize()) {
                     NavHost(navController = navController, startDestination = "auth") {
                         composable("auth") {
                             val authViewModel: AuthViewModel = viewModel()
@@ -167,6 +199,14 @@ class MainActivity : ComponentActivity() {
                                 conversationId = conversationId,
                                 onBack = { navController.popBackStack() }
                             )
+                        }
+                    }
+                        // Call overlays above every screen.
+                        if (incomingCall != null) {
+                            IncomingCallDialog(incoming = incomingCall!!, viewModel = callViewModel)
+                        }
+                        if (activeCall != null) {
+                            ActiveCallScreen(session = activeCall!!, viewModel = callViewModel)
                         }
                     }
                 }
