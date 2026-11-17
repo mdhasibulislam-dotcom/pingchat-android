@@ -14,6 +14,9 @@ import io.github.jan.supabase.realtime.decodeRecord
 import io.github.jan.supabase.realtime.postgresChangeFlow
 import io.github.jan.supabase.realtime.realtime
 import io.github.jan.supabase.realtime.track
+import io.github.jan.supabase.storage.storage
+import io.ktor.http.ContentType
+import java.util.UUID
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.map
 import kotlinx.serialization.json.buildJsonObject
@@ -151,6 +154,97 @@ class ChatRepository {
             }
         } catch (e: Exception) {
             // read markers are best-effort
+        }
+    }
+
+    /**
+     * Send a view-once photo: upload to the public 'chat-photos' bucket
+     * at <userId>/<uuid>.<ext>, then insert a kind='photo' message.
+     * Returns the inserted row (or null if upload/insert failed).
+     * Needs database/fix-photo-viewonce.sql run first (kind CHECK + bucket).
+     */
+    suspend fun sendPhoto(conversationId: String, bytes: ByteArray, mime: String): ChatMessage? {
+        val me = myId() ?: return null
+        val ext = when (mime) {
+            "image/png" -> "png"
+            "image/webp" -> "webp"
+            "image/gif" -> "gif"
+            else -> "jpg"
+        }
+        return try {
+            val path = "$me/${UUID.randomUUID()}.$ext"
+            client.storage.from("chat-photos").upload(path, bytes) {
+                this.contentType = ContentType.parse(mime)
+            }
+            val url = client.storage.from("chat-photos").publicUrl(path)
+            client.from("messages").insert(
+                buildJsonObject {
+                    put("conversation_id", conversationId)
+                    put("sender_id", me)
+                    put("body", "")
+                    put("kind", "photo")
+                    put("media_url", url)
+                    put("media_path", path)
+                    put("view_once", true)
+                }
+            ) { select() }.decodeSingleOrNull<ChatMessage>()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Send a view-once voice message: upload the .m4a bytes to the
+     * public 'voice-messages' bucket, then insert a kind='voice'
+     * message. Returns the inserted row (or null on failure).
+     */
+    suspend fun sendVoice(conversationId: String, bytes: ByteArray): ChatMessage? {
+        val me = myId() ?: return null
+        return try {
+            val path = "$me/${UUID.randomUUID()}.m4a"
+            client.storage.from("voice-messages").upload(path, bytes) {
+                this.contentType = ContentType.parse("audio/mp4")
+            }
+            val url = client.storage.from("voice-messages").publicUrl(path)
+            client.from("messages").insert(
+                buildJsonObject {
+                    put("conversation_id", conversationId)
+                    put("sender_id", me)
+                    put("body", "")
+                    put("kind", "voice")
+                    put("media_url", url)
+                    put("media_path", path)
+                    put("view_once", true)
+                }
+            ) { select() }.decodeSingleOrNull<ChatMessage>()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * View-once consume: deletes a view-once voice/photo message, but
+     * only when the caller is the recipient (the RPC enforces this and
+     * returns false for the sender, an already-consumed message, or a
+     * non-participant). Returns true when the row was deleted.
+     */
+    suspend fun consumeMessage(messageId: String): Boolean {
+        return try {
+            client.postgrest.rpc(
+                "consume_voice_message",
+                buildJsonObject { put("p_message_id", messageId) }
+            ).decodeAs<Boolean>()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** Best-effort removal of a consumed/deleted media file from Storage. */
+    suspend fun deleteMedia(bucket: String, path: String) {
+        try {
+            client.storage.from(bucket).delete(path)
+        } catch (e: Exception) {
+            // cleanup is best-effort; the row is already gone
         }
     }
 

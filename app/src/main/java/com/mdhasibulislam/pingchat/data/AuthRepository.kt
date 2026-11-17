@@ -183,8 +183,10 @@ class AuthRepository {
                     "Google sign-in is not turned on for this app yet. Please log in with email instead."
                 m.contains("Database error saving new user", ignoreCase = true) ->
                     "Could not create your account. The username may already be taken."
-                else -> m
-            }
+                m.contains("no unique or exclusion constraint", ignoreCase = true) ||
+                    m.contains("ON CONFLICT", ignoreCase = true) ->
+                    "Could not save the reaction — the database fix has not been run yet. Run fix-reactions-constraint.sql once in the Supabase SQL Editor."
+                else -> m.lineSequence().firstOrNull()?.take(140) ?: "Something went wrong. Please try again."
         }
     }
 }

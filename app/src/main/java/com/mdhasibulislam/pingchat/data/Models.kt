@@ -32,7 +32,7 @@ data class Participant(
     @SerialName("last_read_at") val lastReadAt: String? = null
 )
 
-/** A chat message (public.messages). kind is 'text' or 'voice'. */
+/** A chat message (public.messages). kind is 'text', 'voice' or 'photo'. */
 @Serializable
 data class ChatMessage(
     @SerialName("id") val id: String,
