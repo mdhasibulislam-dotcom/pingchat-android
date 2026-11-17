@@ -60,20 +60,26 @@ object SessionManager {
         if (started) return
         started = true
         scope.launch {
-            Supabase.client.auth.sessionStatus.collect { status ->
-                when (status) {
-                    is io.github.jan.supabase.auth.status.SessionStatus.Authenticated -> {
-                        _isLoggedIn.value = true
-                        status.session.user?.let { onSignedIn(it) }
+            try {
+                Supabase.client.auth.sessionStatus.collect { status ->
+                    when (status) {
+                        is io.github.jan.supabase.auth.status.SessionStatus.Authenticated -> {
+                            _isLoggedIn.value = true
+                            status.session.user?.let { onSignedIn(it) }
+                        }
+                        is io.github.jan.supabase.auth.status.SessionStatus.NotAuthenticated,
+                        is io.github.jan.supabase.auth.status.SessionStatus.RefreshFailure -> {
+                            _isLoggedIn.value = false
+                            onSignedOut()
+                        }
+                        // Initializing / refreshing — keep the previous value.
+                        else -> Unit
                     }
-                    is io.github.jan.supabase.auth.status.SessionStatus.NotAuthenticated,
-                    is io.github.jan.supabase.auth.status.SessionStatus.RefreshFailure -> {
-                        _isLoggedIn.value = false
-                        onSignedOut()
-                    }
-                    // Initializing / refreshing — keep the previous value.
-                    else -> Unit
                 }
+            } catch (e: Exception) {
+                // The client could not start (e.g. no network engine) — stay on
+                // the login screen instead of crashing the app at launch.
+                _isLoggedIn.value = false
             }
         }
     }
