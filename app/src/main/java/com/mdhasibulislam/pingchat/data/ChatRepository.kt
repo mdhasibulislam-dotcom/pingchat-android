@@ -1,7 +1,6 @@
 package com.mdhasibulislam.pingchat.data
 
 import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.Query
 import com.google.firebase.firestore.SetOptions
 import com.google.firebase.storage.StorageMetadata
 import java.util.UUID
@@ -29,12 +28,11 @@ import kotlinx.coroutines.tasks.await
  *
  * Timestamps are epoch millis in Firestore; the models keep ISO strings,
  * so TimeFormat / tick logic works unchanged. Conversations are sorted
- * client-side (an array-contains + orderBy query would need a composite
- * index); every other query uses a single field so no index is required.
- * EXCEPTION: messages queries use whereArrayContains("participants", me)
- * + orderBy("createdAtMillis"), which needs two composite indexes
- * (participants array-contains + createdAtMillis ASC and DESC) — see
- * firestore.rules for the definitions.
+ * client-side, and so are messages: every query uses a single field
+ * (whereArrayContains) with NO orderBy, so NO composite index is needed
+ * at all — sorting runs client-side after the fetch. The chat-list
+ * preview comes from the denormalized lastMessage* fields on the
+ * conversation doc itself (see updateConversationPreview).
  */
 class ChatRepository {
     private val db get() = FirebaseDb.db
@@ -90,15 +88,24 @@ class ChatRepository {
             val lastRead = data["lastReadAt"] as? Map<String, Any?>
             val myReadMillis = (lastRead?.get(me) as? Long)
             val peerReadMillis = (lastRead?.get(peerId) as? Long)
-            val last = messagesRef(conv.id)
-                .whereArrayContains("participants", me)
-                .orderBy("createdAtMillis", Query.Direction.DESCENDING)
-                .limit(1)
-                .get()
-                .await()
-                .documents
-                .firstOrNull()
-                ?.let { chatMessageFromDoc(conv.id, it.id, it.data ?: emptyMap()) }
+            // The last-message preview comes from the denormalized fields
+            // on the conversation doc itself — no messages query, so no
+            // composite index is needed. (Conversations written before
+            // v2.0.3 have no lastMessageId yet; their preview appears
+            // after the next message is sent.)
+            val lastMessageId = data["lastMessageId"] as? String
+            val last = if (lastMessageId.isNullOrBlank()) {
+                null
+            } else {
+                ChatMessage(
+                    id = lastMessageId,
+                    conversationId = conv.id,
+                    senderId = data["lastSenderId"] as? String ?: "",
+                    body = data["lastMessage"] as? String ?: "",
+                    kind = data["lastMessageKind"] as? String ?: "text",
+                    createdAt = millisToIso(data["lastMessageAt"] as? Long)
+                )
+            }
             val unread = unreadCount(conv.id, myReadMillis)
             ConversationItem(
                 conv, peer, last,
@@ -119,18 +126,19 @@ class ChatRepository {
     private suspend fun unreadCount(conversationId: String, myLastReadAtMillis: Long?): Int {
         val me = myId() ?: return 0
         return try {
-            var query = messagesRef(conversationId)
+            // Single-field filter only (no orderBy/range) so no composite
+            // index is needed; the time filter runs client-side.
+            val snap = messagesRef(conversationId)
                 .whereArrayContains("participants", me)
-                .orderBy("createdAtMillis", Query.Direction.ASCENDING)
-            if (myLastReadAtMillis != null) {
-                query = query.whereGreaterThan("createdAtMillis", myLastReadAtMillis)
-            }
-            val snap = query.get().await()
+                .get()
+                .await()
             snap.documents.count { doc ->
                 val senderId = doc.getString("senderId")
+                val createdAt = doc.getLong("createdAtMillis") ?: 0L
                 val deletedBy = (doc.get("deletedBy") as? List<*>)
                     ?.mapNotNull { it as? String } ?: emptyList()
-                senderId != null && senderId != me && !deletedBy.contains(me)
+                senderId != null && senderId != me && !deletedBy.contains(me) &&
+                    (myLastReadAtMillis == null || createdAt > myLastReadAtMillis)
             }
         } catch (e: Exception) {
             0
@@ -141,15 +149,21 @@ class ChatRepository {
     suspend fun loadMessages(conversationId: String, limit: Int = 200): List<ChatMessage> {
         val me = myId() ?: return emptyList()
         return try {
+            // Single-field filter only (no orderBy) so no composite index
+            // is needed; sorting runs client-side.
             messagesRef(conversationId)
                 .whereArrayContains("participants", me)
-                .orderBy("createdAtMillis", Query.Direction.ASCENDING)
-                .limit(limit.toLong())
                 .get()
                 .await()
                 .documents
-                .map { chatMessageFromDoc(conversationId, it.id, it.data ?: emptyMap()) }
-                .filter { me == null || !it.deletedBy.contains(me) }
+                .map { doc ->
+                    (doc.getLong("createdAtMillis") ?: 0L) to
+                        chatMessageFromDoc(conversationId, doc.id, doc.data ?: emptyMap())
+                }
+                .sortedBy { it.first }
+                .takeLast(limit)
+                .map { it.second }
+                .filter { !it.deletedBy.contains(me) }
         } catch (e: Exception) {
             emptyList()
         }
@@ -188,8 +202,6 @@ class ChatRepository {
             // conversation's messages once and pick out the requested ids.
             val messages = messagesRef(conversationId)
                 .whereArrayContains("participants", me)
-                .orderBy("createdAtMillis", Query.Direction.ASCENDING)
-                .limit(500)
                 .get()
                 .await()
                 .documents
@@ -231,7 +243,7 @@ class ChatRepository {
                 "createdAtMillis" to now
             )
             ref.set(data).await()
-            updateConversationPreview(conversationId, body, "text", now)
+            updateConversationPreview(conversationId, body, "text", now, ref.id, me)
             chatMessageFromDoc(conversationId, ref.id, data)
         } catch (e: Exception) {
             null
@@ -324,7 +336,9 @@ class ChatRepository {
                 conversationId,
                 if (kind == "photo") "Photo" else "Voice message",
                 kind,
-                now
+                now,
+                ref.id,
+                me
             )
             chatMessageFromDoc(conversationId, ref.id, data)
         } catch (e: Exception) {
@@ -336,14 +350,18 @@ class ChatRepository {
         conversationId: String,
         preview: String,
         kind: String,
-        now: Long
+        now: Long,
+        messageId: String,
+        senderId: String
     ) {
         try {
             conversationsRef().document(conversationId).set(
                 mapOf(
                     "lastMessage" to preview,
                     "lastMessageAt" to now,
-                    "lastMessageKind" to kind
+                    "lastMessageKind" to kind,
+                    "lastMessageId" to messageId,
+                    "lastSenderId" to senderId
                 ),
                 SetOptions.merge()
             ).await()
@@ -438,8 +456,6 @@ class ChatRepository {
         val me = myId() ?: return
         val snap = messagesRef(conversationId)
             .whereArrayContains("participants", me)
-            .orderBy("createdAtMillis", Query.Direction.ASCENDING)
-            .limit(500)
             .get()
             .await()
         if (snap.isEmpty) return
@@ -479,12 +495,18 @@ class ChatRepository {
         val me = myId() ?: run { close(); return@callbackFlow }
         val reg = messagesRef(conversationId)
             .whereArrayContains("participants", me)
-            .orderBy("createdAtMillis", Query.Direction.ASCENDING)
             .addSnapshotListener { snap, _ ->
                 if (snap != null) {
+                    // No orderBy (it would need a composite index);
+                    // sorting runs client-side.
                     val list = snap.documents
-                        .map { chatMessageFromDoc(conversationId, it.id, it.data ?: emptyMap()) }
-                        .filter { m -> me == null || !m.deletedBy.contains(me) }
+                        .map { doc ->
+                            (doc.getLong("createdAtMillis") ?: 0L) to
+                                chatMessageFromDoc(conversationId, doc.id, doc.data ?: emptyMap())
+                        }
+                        .sortedBy { it.first }
+                        .map { it.second }
+                        .filter { m -> !m.deletedBy.contains(me) }
                     trySend(list)
                 }
             }
