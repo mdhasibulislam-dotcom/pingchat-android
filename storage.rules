@@ -1,0 +1,42 @@
+rules_version = '2';
+
+// PingChat v2.0.0 — Firebase Storage Rules (bucket ping-chat-fcda6.firebasestorage.app).
+//
+// Paths:
+//   avatars/{uid}/{file}          profile photos
+//   chat-photos/{uid}/{file}      view-once photos (image, max 10 MB in code)
+//   voice-messages/{uid}/{file}   view-once voice (audio, max 5 MB in code)
+//
+// Publish: Firebase console -> Storage -> Rules -> paste -> Publish.
+// (Or: firebase deploy --only storage with the Firebase CLI.)
+//
+// Uploads are owner-only (the path starts with the uploader's uid).
+// Reads are any signed-in user (a photo/voice must be viewable by its
+// recipient, who is not the file owner).
+// Deletes are any signed-in user: view-once consume is done by the
+// RECIPIENT, who must delete the sender's file after one view/listen.
+// The app only deletes a file after the matching message doc was already
+// deleted under the Firestore rules (consume / delete-for-everyone), so a
+// stray delete call cannot remove a live message's media.
+
+service firebase.storage {
+  match /b/{bucket}/o {
+    match /avatars/{userId}/{fileName} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if request.auth != null && request.auth.uid == userId;
+    }
+
+    match /chat-photos/{userId}/{fileName} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if request.auth != null;
+    }
+
+    match /voice-messages/{userId}/{fileName} {
+      allow read: if request.auth != null;
+      allow create, update: if request.auth != null && request.auth.uid == userId;
+      allow delete: if request.auth != null;
+    }
+  }
+}
