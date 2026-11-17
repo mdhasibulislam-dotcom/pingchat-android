@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// PingChat v2.0.2 — Firestore Security Rules (Firebase project ping-chat-fcda6).
+// PingChat v2.0.3 — Firestore Security Rules (Firebase project ping-chat-fcda6).
 //
 // Data model:
 //   users/{uid}            profile + presence + fcmToken
@@ -34,11 +34,11 @@ rules_version = '2';
 // carries a matching constraint (e.g. whereArrayContains("participants",
 // <myUid>) or whereEqualTo("calleeId", <myUid>)) that proves the rule.
 //
-// COMPOSITE INDEXES (create once in console -> Firestore Database ->
-// Indexes -> Add index; they build in a few minutes):
-//   1. collection "messages": participants [Array contains], createdAtMillis [Ascending]
-//   2. collection "messages": participants [Array contains], createdAtMillis [Descending]
-// Everything else the app queries uses a single field (auto-indexed).
+// COMPOSITE INDEXES: none needed. Since v2.0.3 every query in the app
+// uses a single field (whereArrayContains / whereEqualTo) and sorting
+// runs client-side, so Firestore's automatic single-field indexes are
+// enough. (v2.0.2 needed two composite indexes on messages; v2.0.3
+// removed the orderBy calls that required them.)
 
 service cloud.firestore {
   match /databases/{database}/documents {
