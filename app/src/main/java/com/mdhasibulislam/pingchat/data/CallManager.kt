@@ -530,8 +530,8 @@ object CallManager {
     /** Mute / unmute my microphone. */
     fun toggleMute() {
         val track = localAudioTrack ?: return
-        track.enabled = !track.enabled
-        _session.update { it?.copy(muted = !track.enabled) }
+        track.setEnabled(!track.enabled())
+        _session.update { it?.copy(muted = !track.enabled()) }
     }
 
     /** Speakerphone on/off (video calls start on speaker, audio on earpiece). */
@@ -545,8 +545,8 @@ object CallManager {
     /** Turn my camera off/on (video calls). */
     fun toggleCamera() {
         val track = localVideoTrackObj ?: return
-        track.enabled = !track.enabled
-        _session.update { it?.copy(cameraEnabled = track.enabled) }
+        track.setEnabled(!track.enabled())
+        _session.update { it?.copy(cameraEnabled = track.enabled()) }
     }
 
     /** Switch between front and back camera (video calls). */
@@ -634,7 +634,7 @@ object CallManager {
                 }
             }
 
-            override fun onConnectionStateChange(state: PeerConnection.PeerConnectionState) {
+            override fun onConnectionChange(state: PeerConnection.PeerConnectionState) {
                 if (state == PeerConnection.PeerConnectionState.CONNECTED) {
                     onConnected()
                 } else if (state == PeerConnection.PeerConnectionState.FAILED) {

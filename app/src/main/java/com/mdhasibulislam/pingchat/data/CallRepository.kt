@@ -195,7 +195,7 @@ class CallRepository {
         return attempt()
     }
 
-    fun dropPeerChannel(peerId: String) {
+    suspend fun dropPeerChannel(peerId: String) {
         val ch = peerChannels.remove(peerId) ?: return
         try {
             ch.unsubscribe()
