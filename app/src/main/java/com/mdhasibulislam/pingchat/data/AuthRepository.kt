@@ -1,154 +1,151 @@
 package com.mdhasibulislam.pingchat.data
 
-import com.onesignal.OneSignal
-import io.github.jan.supabase.auth.auth
-import io.github.jan.supabase.auth.providers.Google
-import io.github.jan.supabase.auth.providers.builtin.Email
-import io.github.jan.supabase.auth.providers.builtin.IDToken
-import io.github.jan.supabase.auth.user.UserInfo
-import io.github.jan.supabase.postgrest.from
-import io.github.jan.supabase.postgrest.postgrest
-import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.buildJsonObject
-import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.put
+import com.google.firebase.auth.FirebaseAuthInvalidCredentialsException
+import com.google.firebase.auth.FirebaseAuthInvalidUserException
+import com.google.firebase.auth.FirebaseAuthUserCollisionException
+import com.google.firebase.auth.FirebaseAuthWeakPasswordException
+import com.google.firebase.auth.FirebaseUser
+import com.google.firebase.auth.GoogleAuthProvider
+import com.google.firebase.firestore.FieldValue
+import com.google.firebase.firestore.SetOptions
+import kotlinx.coroutines.tasks.await
 
-/** Authentication + profile bootstrap. Mirrors js/auth.js. */
+/** Authentication + profile bootstrap on Firebase Auth + Firestore. */
 class AuthRepository {
-    private val auth get() = Supabase.client.auth
+    private val auth get() = FirebaseDb.auth
+    private val db get() = FirebaseDb.db
 
-    fun currentUser(): UserInfo? = auth.currentUserOrNull()
+    fun currentUser(): FirebaseUser? = auth.currentUser
     fun isSignedIn(): Boolean = currentUser() != null
 
     suspend fun signIn(email: String, password: String) {
-        auth.signInWith(Email) {
-            this.email = email
-            this.password = password
-        }
+        auth.signInWithEmailAndPassword(email, password).await()
     }
 
     /**
-     * Returns true when the account is signed in immediately (email
-     * confirmation off in Supabase), false when a confirmation email was
-     * sent and the user must confirm first.
+     * Creates the account and its users/{uid} profile doc. Firebase does
+     * not require email confirmation to sign in, so this always returns
+     * true (signed in immediately) on success.
      */
     suspend fun signUp(name: String, username: String, email: String, password: String): Boolean {
-        val result = auth.signUpWith(Email) {
-            this.email = email
-            this.password = password
-            data = buildJsonObject {
-                put("full_name", name)
-                put("username", username)
-            }
-        }
-        return result == null
+        val result = auth.createUserWithEmailAndPassword(email, password).await()
+        val user = result.user ?: throw IllegalStateException("Could not create your account.")
+        val now = nowMillis()
+        db.collection("users").document(user.uid).set(
+            mapOf(
+                "username" to username,
+                "fullName" to name,
+                "bio" to null,
+                "avatarUrl" to "",
+                "isPublic" to true,
+                "online" to false,
+                "lastSeen" to now,
+                "createdAt" to now,
+                "updatedAt" to now
+            ),
+            SetOptions.merge()
+        ).await()
+        return true
     }
 
-    /** Google sign-in via ID token (native). Needs GOOGLE_WEB_CLIENT_ID set. */
+    /** Google sign-in via ID token -> Firebase credential. */
     suspend fun signInWithGoogle(idToken: String) {
-        auth.signInWith(IDToken) {
-            provider = Google
-            this.idToken = idToken
-        }
+        val credential = GoogleAuthProvider.getCredential(idToken, null)
+        auth.signInWithCredential(credential).await()
     }
 
     suspend fun resetPassword(email: String) {
-        auth.resetPasswordForEmail(email)
+        auth.sendPasswordResetEmail(email).await()
     }
 
     suspend fun updatePassword(newPassword: String) {
-        auth.updateUser {
-            password = newPassword
-        }
+        val user = auth.currentUser ?: throw IllegalStateException("You are not signed in.")
+        user.updatePassword(newPassword).await()
     }
 
     suspend fun signOut() {
+        val uid = auth.currentUser?.uid
         try {
-            auth.signOut()
+            if (uid != null) {
+                // Take my presence offline and drop the push token mapping.
+                db.collection("users").document(uid).update(
+                    mapOf(
+                        "online" to false,
+                        "lastSeen" to nowMillis(),
+                        "fcmToken" to FieldValue.delete()
+                    )
+                ).await()
+            }
         } catch (e: Exception) {
-            // ignore — local session is cleared anyway
+            // sign-out must never fail on a best-effort write
         }
-        PushHelper.logout()
+        auth.signOut()
     }
 
     suspend fun isUsernameAvailable(username: String): Boolean {
         return try {
-            Supabase.client.postgrest.rpc(
-                "is_username_available",
-                buildJsonObject { put("p_username", username) }
-            ).decodeAs<Boolean>()
+            val snap = db.collection("users")
+                .whereEqualTo("username", username)
+                .limit(1)
+                .get()
+                .await()
+            snap.isEmpty
         } catch (e: Exception) {
             false
         }
     }
 
     /**
-     * Make sure the signed-in user has a profile row. The SQL trigger
-     * handle_new_user() normally creates it; this is the fallback
-     * (same logic as ensureProfile() in the web app, incl. Google avatar
-     * backfill and username derivation from the email prefix).
+     * Make sure the signed-in user has a users/{uid} doc. For Google
+     * sign-ins this also backfills the Google display name / photo and
+     * derives a username from the email prefix when no doc exists yet.
      */
-    suspend fun ensureProfile(user: UserInfo): Profile? {
-        val client = Supabase.client
-        val existing = try {
-            client.from("profiles").select {
-                filter { eq("id", user.id) }
-            }.decodeSingleOrNull<Profile>()
+    suspend fun ensureProfile(user: FirebaseUser): Profile? {
+        val ref = db.collection("users").document(user.uid)
+        val snap = try {
+            ref.get().await()
         } catch (e: Exception) {
             null
         }
-        val meta: JsonObject = user.userMetadata ?: buildJsonObject {}
-        val avatar = meta["avatar_url"]?.jsonPrimitive?.contentOrNull
-            ?: meta["picture"]?.jsonPrimitive?.contentOrNull
-            ?: ""
-        if (existing != null) {
+        val avatar = user.photoUrl?.toString().orEmpty()
+        if (snap != null && snap.exists()) {
+            val existing = profileFromDoc(user.uid, snap.data ?: emptyMap())
             if (existing.avatarUrl.isNullOrBlank() && avatar.isNotBlank()) {
                 return try {
-                    client.from("profiles").update(
-                        { set("avatar_url", avatar) }
-                    ) {
-                        filter { eq("id", user.id) }
-                        select()
-                    }.decodeSingleOrNull<Profile>() ?: existing
+                    ref.update("avatarUrl", avatar).await()
+                    existing.copy(avatarUrl = avatar)
                 } catch (e: Exception) {
                     existing
                 }
             }
             return existing
         }
-        val fullName = meta["full_name"]?.jsonPrimitive?.contentOrNull
-            ?: meta["name"]?.jsonPrimitive?.contentOrNull
+        val fullName = user.displayName?.takeIf { it.isNotBlank() }
             ?: user.email?.substringBefore("@")
             ?: ""
-        val username = usernameForNewUser(user, meta)
-        val inserted = try {
-            client.from("profiles").insert(
-                buildJsonObject {
-                    put("id", user.id)
-                    put("username", username)
-                    put("full_name", fullName)
-                    if (avatar.isNotBlank()) put("avatar_url", avatar)
-                }
-            ) { select() }.decodeSingleOrNull<Profile>()
-        } catch (e: Exception) {
-            null
-        }
-        if (inserted != null) return inserted
-        // Race with the trigger — re-select before giving up.
+        val username = usernameForNewUser(user)
+        val now = nowMillis()
+        val data = mutableMapOf<String, Any?>(
+            "username" to username,
+            "fullName" to fullName,
+            "bio" to null,
+            "avatarUrl" to avatar,
+            "isPublic" to true,
+            "online" to false,
+            "lastSeen" to now,
+            "createdAt" to now,
+            "updatedAt" to now
+        )
         return try {
-            client.from("profiles").select {
-                filter { eq("id", user.id) }
-            }.decodeSingleOrNull<Profile>()
+            ref.set(data).await()
+            profileFromDoc(user.uid, data)
         } catch (e: Exception) {
             null
         }
     }
 
-    private suspend fun usernameForNewUser(user: UserInfo, meta: JsonObject): String {
+    private suspend fun usernameForNewUser(user: FirebaseUser): String {
         val usernameRe = Regex("^[a-z0-9_]{3,20}$")
-        val metaName = meta["username"]?.jsonPrimitive?.contentOrNull?.lowercase() ?: ""
-        if (usernameRe.matches(metaName)) return metaName
         val base = (user.email ?: "").substringBefore("@").lowercase()
             .replace(Regex("[^a-z0-9_]"), "_")
             .replace(Regex("_+"), "_")
@@ -159,55 +156,38 @@ class AuthRepository {
             val suffixed = (base + "_" + (1000..9999).random()).take(20)
             if (usernameRe.matches(suffixed) && isUsernameAvailable(suffixed)) return suffixed
         }
-        return "user_" + user.id.replace("-", "").take(10)
+        return "user_" + user.uid.replace("-", "").take(10)
     }
 
     companion object {
-        /** Same friendly messages as the web app's friendlyError(). */
+        /** Short, friendly error messages for the auth screens. */
         fun friendlyError(e: Throwable): String {
-            val m = e.message ?: "Something went wrong. Please try again."
-            return when {
-                m.contains("Invalid login credentials", ignoreCase = true) ->
+            return when (e) {
+                is FirebaseAuthInvalidCredentialsException ->
                     "Incorrect email or password."
-                m.contains("Email not confirmed", ignoreCase = true) ->
-                    "Please confirm your email first — check your inbox."
-                m.contains("already registered", ignoreCase = true) ->
+                is FirebaseAuthInvalidUserException ->
+                    "No account with this email. Try registering."
+                is FirebaseAuthUserCollisionException ->
                     "This email is already registered. Try logging in."
-                m.contains("rate limit", ignoreCase = true) || m.contains("too many", ignoreCase = true) ->
-                    "Too many attempts. Please wait a minute and try again."
-                m.contains("Failed to fetch", ignoreCase = true) || m.contains("NetworkError", ignoreCase = true) ->
-                    "Network problem. Check your connection and try again."
-                m.contains("duplicate key", ignoreCase = true) || m.contains("23505", ignoreCase = true) ->
-                    "That username is already taken."
-                m.contains("provider", ignoreCase = true) && m.contains("not enabled", ignoreCase = true) ->
-                    "Google sign-in is not turned on for this app yet. Please log in with email instead."
-                m.contains("Database error saving new user", ignoreCase = true) ->
-                    "Could not create your account. The username may already be taken."
-                m.contains("no unique or exclusion constraint", ignoreCase = true) ||
-                    m.contains("ON CONFLICT", ignoreCase = true) ->
-                    "Could not save the reaction — the database fix has not been run yet. Run fix-reactions-constraint.sql once in the Supabase SQL Editor."
-                else -> m.lineSequence().firstOrNull()?.take(140) ?: "Something went wrong. Please try again."
+                is FirebaseAuthWeakPasswordException ->
+                    "Password must be at least 8 characters."
+                else -> {
+                    val m = e.message ?: "Something went wrong. Please try again."
+                    when {
+                        m.contains("network", ignoreCase = true) ||
+                            m.contains("unavailable", ignoreCase = true) ->
+                            "Network problem. Check your connection and try again."
+                        m.contains("PERMISSION_DENIED", ignoreCase = true) ->
+                            "Permission denied — the Firestore rules may not be published yet."
+                        m.contains("too many requests", ignoreCase = true) ->
+                            "Too many attempts. Please wait a minute and try again."
+                        m.contains("not friends", ignoreCase = true) ->
+                            "You need to be friends first."
+                        else -> m.lineSequence().firstOrNull()?.take(140)
+                            ?: "Something went wrong. Please try again."
+                    }
+                }
             }
-        }
-    }
-}
-
-/** OneSignal calls, guarded so push can never break the app. */
-object PushHelper {
-    fun login(userId: String, username: String?) {
-        try {
-            OneSignal.login(userId)
-            if (!username.isNullOrBlank()) OneSignal.User.addTag("username", username)
-        } catch (e: Exception) {
-            // push is best-effort
-        }
-    }
-
-    fun logout() {
-        try {
-            OneSignal.logout()
-        } catch (e: Exception) {
-            // ignore
         }
     }
 }

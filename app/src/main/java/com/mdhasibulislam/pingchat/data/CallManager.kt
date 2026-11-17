@@ -4,7 +4,6 @@ import android.content.Context
 import android.media.AudioManager
 import android.media.Ringtone
 import android.media.RingtoneManager
-import io.github.jan.supabase.realtime.RealtimeChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -39,15 +38,18 @@ import org.webrtc.VideoTrack
 import java.util.UUID
 
 /**
- * Real audio/video calls (Phase 2): WebRTC peer connection + the same
- * Supabase Realtime Broadcast signaling as the web app (js/calls.js), so
- * native <-> web calls interoperate. One call at a time, app-wide:
- * the incoming-call dialog and the in-call screen are rendered from
- * MainScreen, whatever tab the user is on.
+ * Real audio/video calls: WebRTC peer connection + Firestore signaling
+ * (v2.0.0 — calls/{callId} doc + candidates subcollection, replacing the
+ * the Realtime channels of v1.0.5). One call at a time,
+ * app-wide: the incoming-call dialog and the in-call screen are rendered
+ * from MainScreen, whatever tab the user is on.
  *
  * Started once per sign-in from MainActivity (CallManager.start) and
  * stopped on sign-out. All WebRTC work happens on the calling thread
  * (main) for setup; media flows on WebRTC's own threads.
+ *
+ * NOTE: this is a separate Firebase system from the web app — native users
+ * can only call other native (Firebase) users, not web users.
  */
 object CallManager {
     private val repo = CallRepository()
@@ -85,8 +87,8 @@ object CallManager {
     private var ringtoneEnabled = true
     private var started = false
 
-    private var myChannel: RealtimeChannel? = null
     private val signalJobs = mutableListOf<Job>()
+    private val callSignalJobs = mutableListOf<Job>()
 
     /** EGL context shared by the local preview + remote video renderers. */
     val eglContext: EglBase.Context? get() = eglBase?.eglBaseContext
@@ -112,7 +114,7 @@ object CallManager {
     private var timerJob: Job? = null
     private val pendingCandidates = mutableListOf<IceCandidateJson>()
 
-    /** Subscribe to my `calls:<myId>` channel and listen for incoming calls. */
+    /** Watch Firestore for ringing calls addressed to me. */
     fun start(context: Context, userId: String, prefs: Prefs) {
         if (started && myId == userId) return
         stop()
@@ -120,33 +122,19 @@ object CallManager {
         appContext = context.applicationContext
         myId = userId
         ringtoneEnabled = prefs.ringtoneEnabled
-        val channel = repo.myCallsChannel(userId)
-        myChannel = channel
-        signalJobs += scope.launch { repo.offerFlow(channel).collect { onOffer(it) } }
-        signalJobs += scope.launch { repo.answerFlow(channel).collect { onAnswer(it) } }
-        signalJobs += scope.launch { repo.candidateFlow(channel).collect { onCandidate(it) } }
-        signalJobs += scope.launch { repo.declineFlow(channel).collect { onDecline(it) } }
-        signalJobs += scope.launch { repo.endFlow(channel).collect { onRemoteEnd(it) } }
-        signalJobs += scope.launch { repo.cancelFlow(channel).collect { onCancel(it) } }
-        scope.launch {
-            try {
-                channel.subscribe()
-            } catch (e: Exception) {
-                // offline — no incoming calls until the next sign-in
-            }
-        }
+        signalJobs += scope.launch { repo.incomingOfferFlow().collect { onOffer(it) } }
+        signalJobs += scope.launch { repo.incomingCancelFlow().collect { onCancel(it) } }
     }
 
-    /** End any call and unsubscribe (sign-out). */
+    /** End any call and stop listening (sign-out). */
     fun stop() {
         val s = _session.value
         if (s != null && currentPeerId != null) {
-            val peerId = currentPeerId
             val callId = s.callId
             val duration = s.durationSec
             scope.launch {
                 try {
-                    if (peerId != null) repo.sendSignal(peerId, "call-end", CallSignalPayload(callId))
+                    repo.sendCallEnd(callId, "ended")
                     repo.markEnded(callId, duration)
                 } catch (e: Exception) {
                 }
@@ -155,22 +143,28 @@ object CallManager {
         started = false
         signalJobs.forEach { it.cancel() }
         signalJobs.clear()
+        callSignalJobs.forEach { it.cancel() }
+        callSignalJobs.clear()
         noAnswerJob?.cancel()
         timerJob?.cancel()
         stopRingtone()
         endCallInternal(null)
         _incoming.value = null
-        val ch = myChannel
-        myChannel = null
-        if (ch != null) {
-            scope.launch {
-                try {
-                    ch.unsubscribe()
-                } catch (e: Exception) {
-                }
-            }
-        }
         myId = null
+    }
+
+    /** Per-call listeners: answer (caller only), ICE candidates, end/decline. */
+    private fun attachCallListeners(callId: String, peerId: String, outgoing: Boolean) {
+        if (outgoing) {
+            callSignalJobs += scope.launch { repo.answerFlow(callId).collect { onAnswer(it) } }
+        }
+        callSignalJobs += scope.launch { repo.candidatesFlow(callId, peerId).collect { onCandidate(it) } }
+        callSignalJobs += scope.launch { repo.callStatusFlow(callId).collect { onCallStatus(it) } }
+    }
+
+    private fun detachCallListeners() {
+        callSignalJobs.forEach { it.cancel() }
+        callSignalJobs.clear()
     }
 
     // ---------- outgoing call ----------
@@ -185,16 +179,12 @@ object CallManager {
         if (_session.value != null || _incoming.value != null) return "You are already in a call."
         val context = appContext ?: return "Call setup is not ready yet."
         val callId = UUID.randomUUID().toString()
-        val row = repo.insertCall(callId, conversationId, me, peer.id, kind)
-        if (row == null) return "Could not start call. Check your connection and try again."
         ensureFactory(context)
         if (!createLocalTracks(kind, context)) {
-            repo.markEnded(callId, null)
             return "Microphone/camera unavailable. Check the permission and try again."
         }
         val pc = makePeerConnection(callId, peer.id) ?: run {
             stopLocalTracks()
-            repo.markEnded(callId, null)
             return "Could not start call. Try again."
         }
         peerConnection = pc
@@ -203,6 +193,7 @@ object CallManager {
         currentKind = kind
         currentConversationId = conversationId
         currentDirection = "outgoing"
+        attachCallListeners(callId, peer.id, outgoing = true)
         setAudioMode(kind)
         _session.value = CallSession(
             callId = callId, peer = peer, kind = kind,
@@ -252,17 +243,12 @@ object CallManager {
         val myName = SessionManager.profile.value?.fullName?.ifBlank {
             SessionManager.profile.value?.username
         } ?: "Someone"
-        val sent = repo.sendSignal(
-            peer.id, "call-offer",
-            CallOfferPayload(
-                callId = callId,
-                conversationId = conversationId,
-                from = CallPeerInfo(me, myName),
-                kind = kind,
-                sdp = SdpJson(offer.type.canonicalForm(), offer.description)
-            )
+        // The ringing call doc IS the offer: creating it rings the callee.
+        val row = repo.insertCall(
+            callId, conversationId, me, peer.id, kind, myName,
+            SdpJson(offer.type.canonicalForm(), offer.description)
         )
-        if (!sent) {
+        if (row == null) {
             endCallInternal(null)
             return "Could not reach the other side. Check your connection and try again."
         }
@@ -276,7 +262,8 @@ object CallManager {
         scope.launch {
             if (_session.value != null || _incoming.value != null) {
                 // Busy: auto-decline so the caller is not left ringing.
-                repo.sendSignal(payload.from.id, "call-decline", CallSignalPayload(payload.callId))
+                repo.sendCallEnd(payload.callId, "declined")
+                repo.markDeclined(payload.callId)
                 return@launch
             }
             val peerProfile = repo.loadProfile(payload.from.id)
@@ -326,7 +313,7 @@ object CallManager {
         ensureFactory(context)
         if (!createLocalTracks(kind, context)) {
             scope.launch {
-                repo.sendSignal(inc.peerId, "call-decline", CallSignalPayload(inc.callId))
+                repo.sendCallEnd(inc.callId, "declined")
                 repo.markDeclined(inc.callId)
             }
             clearCurrent()
@@ -340,6 +327,7 @@ object CallManager {
             return "Could not answer call. Try again."
         }
         peerConnection = pc
+        attachCallListeners(inc.callId, inc.peerId, outgoing = false)
         currentKind = kind
         setAudioMode(kind)
         _session.value = CallSession(
@@ -365,7 +353,7 @@ object CallManager {
         } ?: false
         if (!remoteOk) {
             scope.launch {
-                repo.sendSignal(inc.peerId, "call-decline", CallSignalPayload(inc.callId))
+                repo.sendCallEnd(inc.callId, "declined")
                 repo.markDeclined(inc.callId)
             }
             endCallInternal(null)
@@ -411,10 +399,7 @@ object CallManager {
             endCallInternal(null)
             return "Could not answer call. Try again."
         }
-        repo.sendSignal(
-            inc.peerId, "call-answer",
-            CallAnswerPayload(inc.callId, SdpJson(answer.type.canonicalForm(), answer.description))
-        )
+        repo.sendAnswer(inc.callId, SdpJson(answer.type.canonicalForm(), answer.description))
         repo.markAccepted(inc.callId)
         flushPendingCandidates()
         return null
@@ -426,12 +411,12 @@ object CallManager {
         noAnswerJob?.cancel()
         stopRingtone()
         _incoming.value = null
-        repo.sendSignal(inc.peerId, "call-decline", CallSignalPayload(inc.callId))
+        repo.sendCallEnd(inc.callId, "declined")
         repo.markDeclined(inc.callId)
         clearCurrent()
     }
 
-    // ---------- signaling handlers (my own channel) ----------
+    // ---------- signaling handlers (Firestore listeners) ----------
 
     private fun onAnswer(payload: CallAnswerPayload) {
         val s = _session.value ?: return
@@ -484,17 +469,23 @@ object CallManager {
         }
     }
 
-    private fun onDecline(payload: CallSignalPayload) {
+    /** The call doc reached a terminal status (caller side). */
+    private fun onCallStatus(status: String) {
+        when (status) {
+            "declined" -> onDecline()
+            "ended" -> onRemoteEnd()
+        }
+    }
+
+    private fun onDecline() {
         val s = _session.value ?: return
-        if (s.callId != payload.callId) return
         noAnswerJob?.cancel()
-        scope.launch { repo.markDeclined(payload.callId) }
+        scope.launch { repo.markDeclined(s.callId) }
         endCallInternal("Call declined.")
     }
 
-    private fun onRemoteEnd(payload: CallSignalPayload) {
+    private fun onRemoteEnd() {
         val s = _session.value ?: return
-        if (s.callId != payload.callId) return
         endCallInternal(null)
     }
 
@@ -518,11 +509,9 @@ object CallManager {
     /** Hang up: tell the other side, mark the row ended, tear down locally. */
     suspend fun endCall() {
         val s = _session.value ?: return
-        val peerId = currentPeerId ?: return
         noAnswerJob?.cancel()
         val wasAnswered = s.status == CallStatus.ACTIVE && callStartedAtMillis != null
-        if (wasAnswered) repo.sendSignal(peerId, "call-end", CallSignalPayload(s.callId))
-        else repo.sendSignal(peerId, "call-cancel", CallSignalPayload(s.callId))
+        repo.sendCallEnd(s.callId, "ended")
         repo.markEnded(s.callId, s.durationSec.takeIf { wasAnswered })
         endCallInternal(null)
     }
@@ -616,12 +605,9 @@ object CallManager {
         val pc = f.createPeerConnection(config, object : PeerConnection.Observer {
             override fun onIceCandidate(candidate: IceCandidate) {
                 scope.launch {
-                    repo.sendSignal(
-                        peerId, "ice-candidate",
-                        IceCandidatePayload(
-                            callId,
-                            IceCandidateJson(candidate.sdp, candidate.sdpMid, candidate.sdpMLineIndex)
-                        )
+                    repo.sendCandidate(
+                        callId,
+                        IceCandidateJson(candidate.sdp, candidate.sdpMid, candidate.sdpMLineIndex)
                     )
                 }
             }
@@ -696,6 +682,7 @@ object CallManager {
     private fun endCallInternal(message: String?) {
         noAnswerJob?.cancel()
         timerJob?.cancel()
+        detachCallListeners()
         stopRingtone()
         try {
             peerConnection?.close()
@@ -742,6 +729,7 @@ object CallManager {
     }
 
     private fun clearCurrent() {
+        detachCallListeners()
         currentCallId = null
         currentPeerId = null
         currentKind = null

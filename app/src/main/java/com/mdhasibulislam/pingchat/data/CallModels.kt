@@ -4,11 +4,11 @@ import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
 /**
- * WebRTC call signaling payloads — these MUST match the web app's
- * js/calls.js exactly (same field names, same shapes), so a native user
- * can call a web user and vice versa. Transport: Supabase Realtime
- * Broadcast on a per-user channel `calls:<userId>`, events call-offer /
- * call-answer / ice-candidate / call-decline / call-end / call-cancel.
+ * WebRTC call signaling payloads — the field names match the web app's
+ * js/calls.js shapes, but the transport is Firestore (calls/{callId} doc +
+ * candidates subcollection) in this Firebase app, so a native user can
+ * only call another native user. Events: call-offer / call-answer /
+ * ice-candidate / call-decline / call-end / call-cancel.
  */
 
 /** The caller, as sent in a call-offer (web: payload.from = {id, name}). */

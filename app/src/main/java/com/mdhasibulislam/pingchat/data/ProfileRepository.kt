@@ -1,21 +1,19 @@
 package com.mdhasibulislam.pingchat.data
 
-import io.github.jan.supabase.auth.auth
-import io.github.jan.supabase.postgrest.from
-import io.github.jan.supabase.storage.storage
-import io.ktor.http.ContentType
+import com.google.firebase.storage.StorageMetadata
+import kotlinx.coroutines.tasks.await
 
-/** My profile: view, edit, photo upload. Mirrors js/profile.js + js/settings.js. */
+/** My profile: view, edit, photo upload — on Firestore + Firebase Storage. */
 class ProfileRepository {
-    private val client get() = Supabase.client
+    private val db get() = FirebaseDb.db
+    private val storage get() = FirebaseDb.storage
 
-    fun myId(): String? = client.auth.currentUserOrNull()?.id
+    fun myId(): String? = FirebaseDb.auth.currentUser?.uid
 
     suspend fun getProfile(userId: String): Profile? {
         return try {
-            client.from("profiles").select {
-                filter { eq("id", userId) }
-            }.decodeSingleOrNull<Profile>()
+            val snap = db.collection("users").document(userId).get().await()
+            if (!snap.exists()) null else profileFromDoc(userId, snap.data ?: emptyMap())
         } catch (e: Exception) {
             null
         }
@@ -23,33 +21,34 @@ class ProfileRepository {
 
     suspend fun updateProfile(userId: String, fullName: String, bio: String?, isPublic: Boolean): Profile? {
         return try {
-            client.from("profiles").update(
-                {
-                    set("full_name", fullName)
-                    set("bio", bio)
-                    set("is_public", isPublic)
-                }
-            ) {
-                filter { eq("id", userId) }
-                select()
-            }.decodeSingleOrNull<Profile>()
+            db.collection("users").document(userId).update(
+                mapOf(
+                    "fullName" to fullName,
+                    "bio" to bio,
+                    "isPublic" to isPublic,
+                    "updatedAt" to nowMillis()
+                )
+            ).await()
+            getProfile(userId)
         } catch (e: Exception) {
             null
         }
     }
 
     /**
-     * Upload a profile photo to the public 'avatars' bucket at
-     * <userId>/<timestamp>.<ext> (same layout as the web app) and return
-     * its public URL. Returns null on failure.
+     * Upload a profile photo to Firebase Storage at
+     * avatars/<userId>/<timestamp>.<ext> and return its download URL.
+     * Returns null on failure.
      */
     suspend fun uploadAvatar(userId: String, bytes: ByteArray, ext: String, contentType: String): String? {
         return try {
-            val path = "$userId/${System.currentTimeMillis()}.$ext"
-            client.storage.from("avatars").upload(path, bytes) {
-                this.contentType = ContentType.parse(contentType)
-            }
-            client.storage.from("avatars").publicUrl(path)
+            val path = "avatars/$userId/${System.currentTimeMillis()}.$ext"
+            val ref = storage.reference.child(path)
+            ref.putBytes(
+                bytes,
+                StorageMetadata.Builder().setContentType(contentType).build()
+            ).await()
+            ref.downloadUrl.await().toString()
         } catch (e: Exception) {
             null
         }
@@ -57,12 +56,13 @@ class ProfileRepository {
 
     suspend fun setAvatarUrl(userId: String, url: String): Profile? {
         return try {
-            client.from("profiles").update(
-                { set("avatar_url", url) }
-            ) {
-                filter { eq("id", userId) }
-                select()
-            }.decodeSingleOrNull<Profile>()
+            db.collection("users").document(userId).update(
+                mapOf(
+                    "avatarUrl" to url,
+                    "updatedAt" to nowMillis()
+                )
+            ).await()
+            getProfile(userId)
         } catch (e: Exception) {
             null
         }

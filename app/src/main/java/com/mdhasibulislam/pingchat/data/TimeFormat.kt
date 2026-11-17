@@ -22,7 +22,7 @@ object TimeFormat {
     private val weekdayFmt = DateTimeFormatter.ofPattern("EEE", Locale.US)
 
     /**
-     * Supabase/PostgREST returns timestamptz with a numeric offset, e.g.
+     * The backend returns timestamps with a numeric offset, e.g.
      * "2026-11-17T02:53:10.123456+00:00" — Instant.parse() only accepts a
      * trailing "Z" and returns null for those, which blanked every date/time
      * label. Try OffsetDateTime first (handles +00:00 and Z), then Instant.
