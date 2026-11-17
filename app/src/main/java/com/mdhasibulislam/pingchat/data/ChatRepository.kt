@@ -103,7 +103,7 @@ class ChatRepository {
                     senderId = data["lastSenderId"] as? String ?: "",
                     body = data["lastMessage"] as? String ?: "",
                     kind = data["lastMessageKind"] as? String ?: "text",
-                    createdAt = millisToIso(data["lastMessageAt"] as? Long)
+                    createdAt = millisToIsoOrEmpty(data["lastMessageAt"] as? Long)
                 )
             }
             val unread = unreadCount(conv.id, myReadMillis)
