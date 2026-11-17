@@ -1,11 +1,10 @@
 package com.mdhasibulislam.pingchat.data
 
 import android.content.Context
-import com.google.firebase.auth.ktx.auth
-import com.google.firebase.firestore.ktx.firestore
-import com.google.firebase.ktx.Firebase
-import com.google.firebase.messaging.ktx.messaging
-import com.google.firebase.storage.ktx.storage
+import com.google.firebase.auth.FirebaseAuth
+import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.messaging.FirebaseMessaging
+import com.google.firebase.storage.FirebaseStorage
 import java.time.Instant
 
 /**
@@ -18,10 +17,10 @@ import java.time.Instant
  * system (separate accounts, chats and calls — no cross-platform data).
  */
 object FirebaseDb {
-    val auth get() = Firebase.auth
-    val db get() = Firebase.firestore
-    val storage get() = Firebase.storage
-    val messaging get() = Firebase.messaging
+    val auth get() = FirebaseAuth.getInstance()
+    val db get() = FirebaseFirestore.getInstance()
+    val storage get() = FirebaseStorage.getInstance()
+    val messaging get() = FirebaseMessaging.getInstance()
 
     /** Storage bucket from google-services.json. */
     const val STORAGE_BUCKET = "ping-chat-fcda6.firebasestorage.app"
