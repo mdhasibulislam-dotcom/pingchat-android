@@ -9,6 +9,7 @@ import com.mdhasibulislam.pingchat.data.ChatMessage
 import com.mdhasibulislam.pingchat.data.ChatRepository
 import com.mdhasibulislam.pingchat.data.PresenceState
 import com.mdhasibulislam.pingchat.data.Profile
+import com.mdhasibulislam.pingchat.data.PushSender
 import com.mdhasibulislam.pingchat.data.Reaction
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.TickState
@@ -159,10 +160,25 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
             }
             if (sent != null) {
                 _messages.update { it + sent }
+                notifyPeer(body)
             } else {
                 loadMessages()
             }
             _sending.value = false
+        }
+    }
+
+    /** WhatsApp-style push: tell the peer a message arrived (best-effort). */
+    private fun notifyPeer(preview: String) {
+        val token = _peer.value?.fcmToken ?: return
+        val myName = SessionManager.profile.value?.fullName?.ifBlank {
+            SessionManager.profile.value?.username
+        } ?: "PingChat"
+        viewModelScope.launch {
+            PushSender.sendPush(
+                token, myName, preview,
+                mapOf("type" to "message", "conversationId" to conversationId)
+            )
         }
     }
 
@@ -174,6 +190,7 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
             val sent = repo.sendPhoto(conversationId, bytes, mime)
             if (sent != null) {
                 _messages.update { it + sent }
+                notifyPeer("Sent a photo")
             } else {
                 _error.value = "Could not send photo. Check your connection and try again."
             }
@@ -245,6 +262,7 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
             val sent = repo.sendVoice(conversationId, bytes)
             if (sent != null) {
                 _messages.update { it + sent }
+                notifyPeer("Sent a voice message")
             } else {
                 _error.value = "Could not send voice message. Check your connection and try again."
             }
