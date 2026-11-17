@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "103915029688",
+    "project_id": "ping-chat-fcda6",
+    "storage_bucket": "ping-chat-fcda6.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:103915029688:android:9d48b10c8a674b93f0604d",
+        "android_client_info": {
+          "package_name": "com.mdhasibulislam.pingchat"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBbcbx-8pWMY9wiAQPvQH9Id0ryPSsH5E8"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

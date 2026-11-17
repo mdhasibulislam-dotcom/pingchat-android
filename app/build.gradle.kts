@@ -1,5 +1,6 @@
 plugins {
     id("com.android.application")
+    id("com.google.gms.google-services")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("org.jetbrains.kotlin.plugin.compose")
 }
@@ -12,8 +13,11 @@ android {
         applicationId = "com.mdhasibulislam.pingchat"
         minSdk = 24
         targetSdk = 37
-        versionCode = 6
-        versionName = "1.0.5"
+        // v2.0.0: full backend move from Supabase to Firebase. Same package
+        // name, so this installs over v1.0.5 — but Firebase Auth is a
+        // separate system, so users must register fresh accounts.
+        versionCode = 7
+        versionName = "2.0.0"
     }
 
     // All debug builds share the committed app/debug.keystore, so every CI
@@ -70,31 +74,32 @@ dependencies {
     implementation("androidx.navigation:navigation-compose:2.7.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
+    // App foreground/background for presence (online / lastSeen).
+    implementation("androidx.lifecycle:lifecycle-process:2.8.6")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
+    // Task.await() for Firebase (Auth / Firestore / Storage / Messaging).
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 
-    // Supabase (Auth + Database + Realtime + Storage) — same project as the web app.
-    // Ktor needs a real HTTP engine on Android: without ktor-client-okhttp the
-    // Supabase client crashes at startup ("Failed to find HTTP client engine").
-    // Version must match the Ktor version supabase-kt 3.9.0 uses (3.6.0).
-    implementation("io.ktor:ktor-client-okhttp:3.6.0")
-    implementation("io.github.jan-tennert.supabase:auth-kt:3.9.0")
-    implementation("io.github.jan-tennert.supabase:postgrest-kt:3.9.0")
-    implementation("io.github.jan-tennert.supabase:realtime-kt:3.9.0")
-    implementation("io.github.jan-tennert.supabase:storage-kt:3.9.0")
+    // Firebase (BoM 35.2.0) — Auth + Firestore + Storage + Cloud Messaging.
+    // Config comes from app/google-services.json (project ping-chat-fcda6);
+    // that file is public client config and is committed on purpose.
+    implementation(platform("com.google.firebase:firebase-bom:35.2.0"))
+    implementation("com.google.firebase:firebase-auth-ktx")
+    implementation("com.google.firebase:firebase-firestore-ktx")
+    implementation("com.google.firebase:firebase-storage-ktx")
+    implementation("com.google.firebase:firebase-messaging-ktx")
 
-    // OneSignal push — App ID only. Delivery needs FCM (google-services.json),
-    // see README.md "Push notifications" before expecting pushes to arrive.
-    implementation("com.onesignal:OneSignal:5.11.0")
-
-    // Google Sign-In (ID token -> Supabase signInWithIdToken).
+    // Google Sign-In (ID token -> Firebase signInWithCredential).
+    // Works only once the Google provider is enabled in the Firebase
+    // console — until then the Google button shows a friendly message.
     implementation("com.google.android.gms:play-services-auth:21.2.0")
 
     // Avatar images.
     implementation("io.coil-kt:coil-compose:2.7.0")
 
-    // WebRTC audio/video calls (Phase 2, v1.0.5).
+    // WebRTC audio/video calls (kept from v1.0.5).
     // NOTE: org.webrtc:google-webrtc is NO LONGER on Maven Central (Google
     // deprecated the JCenter distribution) — verified 404 on 2026-11-17.
     // The official replacement is Google's resumed distribution at
