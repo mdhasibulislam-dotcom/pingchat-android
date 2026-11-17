@@ -144,7 +144,8 @@ class MainActivity : ComponentActivity() {
                                 onDarkThemeChange = { enabled ->
                                     darkTheme = enabled
                                     prefs.darkTheme = enabled
-                                }
+                                },
+                                prefs = prefs
                             )
                         }
                         composable("settings") {
