@@ -78,7 +78,7 @@ fun SettingsScreen(
             onCheckedChange = {
                 isPublic = it
                 val p = profile
-                if (p != null) viewModel.saveProfile(p.fullName, p.bio ?: "", it)
+                if (p != null) viewModel.saveProfile(p.fullName, p.bio ?: "", p.phone ?: "", it)
             }
         )
         SettingsRow(
