@@ -19,12 +19,13 @@ class ProfileRepository {
         }
     }
 
-    suspend fun updateProfile(userId: String, fullName: String, bio: String?, isPublic: Boolean): Profile? {
+    suspend fun updateProfile(userId: String, fullName: String, bio: String?, phone: String?, isPublic: Boolean): Profile? {
         return try {
             db.collection("users").document(userId).update(
                 mapOf(
                     "fullName" to fullName,
                     "bio" to bio,
+                    "phone" to phone,
                     "isPublic" to isPublic,
                     "updatedAt" to nowMillis()
                 )
