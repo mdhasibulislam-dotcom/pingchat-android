@@ -6,15 +6,24 @@ import android.widget.Toast
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.height
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -35,6 +44,7 @@ import com.mdhasibulislam.pingchat.ui.screens.LoginScreen
 import com.mdhasibulislam.pingchat.ui.screens.MainScreen
 import com.mdhasibulislam.pingchat.ui.screens.RegisterScreen
 import com.mdhasibulislam.pingchat.ui.screens.SettingsScreen
+import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.PingChatTheme
 import com.mdhasibulislam.pingchat.ui.viewmodel.AuthViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.CallViewModel
@@ -47,11 +57,17 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
+        // Start the session BEFORE the first frame: Firebase restores the
+        // saved login synchronously, so the app knows right away whether
+        // to open chats or the login screen (no login flash).
+        SessionManager.start()
+
         // Native Google sign-in: the Google ID token is exchanged with
         // Firebase Auth (signInWithCredential). The OAuth Web client ID
-        // comes from google-services.json at runtime — it is EMPTY right
-        // now (Google provider not enabled in the console), so the Google
-        // button shows a friendly message and email login works.
+        // comes from google-services.json at runtime (present since the
+        // fresh google-services.json — Google provider enabled in the
+        // console); if it is missing, the Google button shows a friendly
+        // message and email login works.
         val googleClientId = FirebaseConfig.googleWebClientId(this)
         if (googleClientId != null) {
             val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
@@ -70,7 +86,6 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(Unit) {
                 SessionManager.start()
             }
-
             // Calls: watch Firestore for ringing calls addressed to me
             // when signed in (so incoming calls ring), stop on sign-out.
             val currentUser by SessionManager.user.collectAsState()
@@ -120,7 +135,26 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     Box(modifier = Modifier.fillMaxSize()) {
-                    NavHost(navController = navController, startDestination = "auth") {
+                    if (isLoggedIn == null) {
+                        // Splash while the saved session loads — the app
+                        // never flashes the login screen first.
+                        Box(
+                            modifier = Modifier.fillMaxSize(),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                                Text(
+                                    "PingChat",
+                                    style = MaterialTheme.typography.headlineMedium,
+                                    fontWeight = FontWeight.Bold,
+                                    color = Emerald
+                                )
+                                Spacer(Modifier.height(16.dp))
+                                CircularProgressIndicator(color = Emerald)
+                            }
+                        }
+                    } else {
+                    NavHost(navController = navController, startDestination = if (isLoggedIn == true) "main" else "auth") {
                         composable("auth") {
                             val authViewModel: AuthViewModel = viewModel()
                             var authScreen by remember { mutableStateOf("login") }
@@ -204,6 +238,7 @@ class MainActivity : ComponentActivity() {
                                 onBack = { navController.popBackStack() }
                             )
                         }
+                    }
                     }
                         // Call overlays above every screen.
                         if (incomingCall != null) {
