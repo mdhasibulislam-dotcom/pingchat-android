@@ -18,14 +18,13 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -35,6 +34,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -57,6 +57,8 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
     val myId = SessionManager.user.collectAsState().value?.id
     val colors = pingChatColors
     var query by remember { mutableStateOf("") }
+    // 0 = Chat (all conversations), 1 = Active (online people only).
+    var tab by remember { mutableStateOf(0) }
 
     val filtered = remember(items, query) {
         if (query.isBlank()) items
@@ -77,24 +79,45 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
                 Text("Chats", style = MaterialTheme.typography.headlineMedium, color = colors.text)
                 Text("Your conversations.", style = MaterialTheme.typography.bodyMedium, color = colors.muted)
             }
-            if (loading) {
-                CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
-            } else {
-                IconButton(onClick = { viewModel.refresh() }) {
-                    Icon(Icons.Default.Refresh, contentDescription = "Refresh", tint = colors.muted)
-                }
-            }
         }
-        OutlinedTextField(
+        // Messenger-style pill search: rounded, grey fill, no outline.
+        TextField(
             value = query,
             onValueChange = { query = it },
             placeholder = { Text("Search chats") },
             leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = colors.muted) },
             singleLine = true,
+            shape = RoundedCornerShape(50),
+            colors = TextFieldDefaults.colors(
+                focusedContainerColor = colors.inputBg,
+                unfocusedContainerColor = colors.inputBg,
+                disabledContainerColor = colors.inputBg,
+                focusedIndicatorColor = Color.Transparent,
+                unfocusedIndicatorColor = Color.Transparent,
+                disabledIndicatorColor = Color.Transparent
+            ),
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp, vertical = 4.dp)
         )
+        // Small tabs under the search bar: Chat | Active.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            ChatTabChip(
+                text = "Chat",
+                selected = tab == 0,
+                onClick = { tab = 0 }
+            )
+            ChatTabChip(
+                text = "Active",
+                selected = tab == 1,
+                onClick = { tab = 1 }
+            )
+        }
         if (error != null) {
             Text(
                 text = error ?: "",
@@ -103,7 +126,33 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
             )
         }
-        if (filtered.isEmpty() && !loading) {
+        if (loading && items.isEmpty()) {
+            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                CircularProgressIndicator(color = Emerald)
+            }
+        } else if (tab == 1) {
+            // Active tab: only the people who are online right now.
+            val activeItems = filtered.filter { onlineIds.contains(it.peer.id) }
+            if (activeItems.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    Text(
+                        "No one is active right now.",
+                        color = colors.muted,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(24.dp)
+                    )
+                }
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    items(activeItems, key = { it.conversation.id }) { item ->
+                        ActiveRow(
+                            item = item,
+                            onClick = { onOpenChat(item.conversation.id) }
+                        )
+                    }
+                }
+            }
+        } else if (filtered.isEmpty()) {
             Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                 Text(
                     if (query.isBlank()) "No chats yet — add a friend to start chatting."
@@ -124,6 +173,57 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
                     )
                 }
             }
+        }
+    }
+}
+
+/** Small pill tab under the search bar (Chat / Active). */
+@Composable
+private fun ChatTabChip(text: String, selected: Boolean, onClick: () -> Unit) {
+    val colors = pingChatColors
+    Box(
+        modifier = Modifier
+            .clip(RoundedCornerShape(50))
+            .background(if (selected) Emerald else colors.inputBg)
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 8.dp),
+        contentAlignment = Alignment.Center
+    ) {
+        Text(
+            text = text,
+            color = if (selected) Color.White else colors.text,
+            style = MaterialTheme.typography.bodyMedium,
+            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+        )
+    }
+}
+
+/** One online person in the Active tab: avatar + name + "Active now". */
+@Composable
+private fun ActiveRow(item: ConversationItem, onClick: () -> Unit) {
+    val colors = pingChatColors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Avatar(profile = item.peer, size = AvatarSize.MD, online = true)
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                text = item.peer.fullName.ifBlank { item.peer.username },
+                style = MaterialTheme.typography.titleMedium,
+                color = colors.text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                text = "Active now",
+                style = MaterialTheme.typography.bodyMedium,
+                color = Emerald
+            )
         }
     }
 }

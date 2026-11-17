@@ -2,6 +2,7 @@ package com.mdhasibulislam.pingchat.ui.screens
 
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.padding
@@ -14,11 +15,17 @@ import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Person
 import androidx.compose.material.icons.filled.Phone
+import androidx.compose.material.icons.outlined.Call
+import androidx.compose.material.icons.outlined.ChatBubbleOutline
+import androidx.compose.material.icons.outlined.Group
+import androidx.compose.material.icons.outlined.PersonOutline
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
@@ -109,31 +116,91 @@ fun MainScreen(
             )
         },
         bottomBar = {
-            NavigationBar {
-                NavigationBarItem(
-                    selected = tab == 0,
-                    onClick = { tab = 0 },
-                    icon = { Icon(Icons.Default.ChatBubble, contentDescription = "Chats") },
-                    label = { Text("Chats") }
-                )
-                NavigationBarItem(
-                    selected = tab == 1,
-                    onClick = { tab = 1 },
-                    icon = { Icon(Icons.Default.Phone, contentDescription = "Calls") },
-                    label = { Text("Calls") }
-                )
-                NavigationBarItem(
-                    selected = tab == 2,
-                    onClick = { tab = 2 },
-                    icon = { Icon(Icons.Default.People, contentDescription = "People") },
-                    label = { Text("People") }
-                )
-                NavigationBarItem(
-                    selected = tab == 3,
-                    onClick = { tab = 3 },
-                    icon = { Icon(Icons.Default.Person, contentDescription = "Profile") },
-                    label = { Text("Profile") }
-                )
+            // Messenger-style bottom bar: plain background, thin top line, no
+            // pill behind the selected icon — selected tab is a filled dark
+            // icon, unselected tabs are grey outline icons.
+            Column {
+                HorizontalDivider(color = colors.border)
+                NavigationBar(
+                    containerColor = colors.card,
+                    tonalElevation = 0.dp
+                ) {
+                    val navColors = NavigationBarItemDefaults.colors(
+                        indicatorColor = Color.Transparent,
+                        selectedIconColor = colors.text,
+                        selectedTextColor = colors.text,
+                        unselectedIconColor = colors.muted,
+                        unselectedTextColor = colors.muted
+                    )
+                    NavigationBarItem(
+                        selected = tab == 0,
+                        onClick = { tab = 0 },
+                        icon = {
+                            Icon(
+                                if (tab == 0) Icons.Default.ChatBubble else Icons.Outlined.ChatBubbleOutline,
+                                contentDescription = "Chats"
+                            )
+                        },
+                        label = {
+                            Text(
+                                "Chats",
+                                fontWeight = if (tab == 0) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        colors = navColors
+                    )
+                    NavigationBarItem(
+                        selected = tab == 1,
+                        onClick = { tab = 1 },
+                        icon = {
+                            Icon(
+                                if (tab == 1) Icons.Default.Phone else Icons.Outlined.Call,
+                                contentDescription = "Calls"
+                            )
+                        },
+                        label = {
+                            Text(
+                                "Calls",
+                                fontWeight = if (tab == 1) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        colors = navColors
+                    )
+                    NavigationBarItem(
+                        selected = tab == 2,
+                        onClick = { tab = 2 },
+                        icon = {
+                            Icon(
+                                if (tab == 2) Icons.Default.People else Icons.Outlined.Group,
+                                contentDescription = "People"
+                            )
+                        },
+                        label = {
+                            Text(
+                                "People",
+                                fontWeight = if (tab == 2) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        colors = navColors
+                    )
+                    NavigationBarItem(
+                        selected = tab == 3,
+                        onClick = { tab = 3 },
+                        icon = {
+                            Icon(
+                                if (tab == 3) Icons.Default.Person else Icons.Outlined.PersonOutline,
+                                contentDescription = "Profile"
+                            )
+                        },
+                        label = {
+                            Text(
+                                "Profile",
+                                fontWeight = if (tab == 3) FontWeight.Bold else FontWeight.Normal
+                            )
+                        },
+                        colors = navColors
+                    )
+                }
             }
         }
     ) { padding ->
