@@ -86,10 +86,10 @@ dependencies {
     // Config comes from app/google-services.json (project ping-chat-fcda6);
     // that file is public client config and is committed on purpose.
     implementation(platform("com.google.firebase:firebase-bom:35.2.0"))
-    implementation("com.google.firebase:firebase-auth-ktx")
-    implementation("com.google.firebase:firebase-firestore-ktx")
-    implementation("com.google.firebase:firebase-storage-ktx")
-    implementation("com.google.firebase:firebase-messaging-ktx")
+    implementation("com.google.firebase:firebase-auth")
+    implementation("com.google.firebase:firebase-firestore")
+    implementation("com.google.firebase:firebase-storage")
+    implementation("com.google.firebase:firebase-messaging")
 
     // Google Sign-In (ID token -> Firebase signInWithCredential).
     // Works only once the Google provider is enabled in the Firebase
