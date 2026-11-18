@@ -37,6 +37,15 @@
                 <action android:name="com.google.firebase.MESSAGING_EVENT" />
             </intent-filter>
         </service>
+
+        <!-- v2.0.8: inline reply from the notification shade. -->
+        <receiver
+            android:name=".data.NotificationReplyReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.mdhasibulislam.pingchat.REPLY" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>
