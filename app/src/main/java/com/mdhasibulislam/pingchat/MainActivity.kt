@@ -54,8 +54,22 @@ class MainActivity : ComponentActivity() {
 
     private var googleSignInClient: GoogleSignInClient? = null
 
+    // Chat to open from a notification tap / Open chat action (v2.0.8).
+    // Set from the launch intent (cold start) or onNewIntent (app already
+    // running); drained by the navigation effects below once handled.
+    private val openChatIdState = mutableStateOf<String?>(null)
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        intent.getStringExtra("conversationId")?.let { openChatIdState.value = it }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        // Notification tap / Open chat action carries the chat to open.
+        intent.getStringExtra("conversationId")?.let { openChatIdState.value = it }
 
         // Start the session BEFORE the first frame: Firebase restores the
         // saved login synchronously, so the app knows right away whether
@@ -106,6 +120,13 @@ class MainActivity : ComponentActivity() {
                                 popUpTo("auth") { inclusive = true }
                             }
                         }
+                        // Notification tap / Open chat action: open that chat
+                        // once the main screen is up (v2.0.8).
+                        val chatId = openChatIdState.value
+                        if (chatId != null) {
+                            openChatIdState.value = null
+                            navController.navigate("chat/$chatId")
+                        }
                     }
                     false -> {
                         if (navController.currentDestination?.route != "auth") {
@@ -115,6 +136,18 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     null -> { /* still loading the saved session */ }
+                }
+            }
+            // Notification tap / Open chat action while the app is already
+            // running (v2.0.8): onNewIntent sets openChatIdState, this
+            // opens that chat.
+            val openChatId by openChatIdState
+            LaunchedEffect(openChatId) {
+                if (isLoggedIn == true && openChatId != null &&
+                    navController.currentDestination?.route != "chat/$openChatId"
+                ) {
+                    navController.navigate("chat/$openChatId")
+                    openChatIdState.value = null
                 }
             }
 
