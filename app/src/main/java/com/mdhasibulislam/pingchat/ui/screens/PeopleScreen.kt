@@ -283,7 +283,9 @@ fun ProfilePreviewDialog(
     onAccept: () -> Unit,
     onDecline: () -> Unit,
     onDismiss: () -> Unit,
-    onClearChat: (() -> Unit)? = null
+    onClearChat: (() -> Unit)? = null,
+    /** v3.1.0: open the full public profile screen for this person. */
+    onViewProfile: (() -> Unit)? = null
 ) {
     val colors = pingChatColors
     val memberSince = remember(profile.createdAt) {
@@ -328,6 +330,9 @@ fun ProfilePreviewDialog(
                 }
                 Spacer(Modifier.height(16.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    if (onViewProfile != null) {
+                        OutlinedButton(onClick = onViewProfile) { Text("View profile") }
+                    }
                     when (state) {
                         FriendState.FRIENDS -> {
                             if (showMessageButton) {

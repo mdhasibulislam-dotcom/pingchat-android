@@ -15,7 +15,6 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -41,12 +40,10 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Lock
-import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.MoreVert
-import androidx.compose.material.icons.filled.Pause
 import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material.icons.filled.PlayArrow
-import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.PushPin
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -80,6 +77,7 @@ import androidx.compose.ui.platform.LocalLifecycleOwner
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardCapitalization
 import androidx.compose.ui.text.style.TextOverflow
@@ -93,17 +91,30 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
 import java.io.File
+import java.time.Instant
+import java.time.temporal.ChronoUnit
 import com.mdhasibulislam.pingchat.data.ChatMessage
+import com.mdhasibulislam.pingchat.data.ChatRepository
+import com.mdhasibulislam.pingchat.data.ConversationItem
 import com.mdhasibulislam.pingchat.data.FriendState
+import com.mdhasibulislam.pingchat.data.Profile
+import com.mdhasibulislam.pingchat.data.PushSender
 import com.mdhasibulislam.pingchat.data.Reaction
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.TickState
 import com.mdhasibulislam.pingchat.data.TimeFormat
+import com.mdhasibulislam.pingchat.data.PrivacyRepository
+import com.mdhasibulislam.pingchat.data.VoicePlaybackManager
 import com.mdhasibulislam.pingchat.data.messageDisplayText
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.components.TickIcon
 import com.mdhasibulislam.pingchat.ui.components.TypingIndicator
+import com.mdhasibulislam.pingchat.ui.components.VoiceMessageBubble
+import com.mdhasibulislam.pingchat.ui.components.VoiceMicButton
+import com.mdhasibulislam.pingchat.ui.components.VoiceMiniPlayer
+import com.mdhasibulislam.pingchat.ui.components.VoiceRecorder
+import com.mdhasibulislam.pingchat.ui.components.VoiceRecorderBar
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.WhatsAppNoticeBgDark
 import com.mdhasibulislam.pingchat.ui.theme.WhatsAppNoticeBgLight
@@ -163,13 +174,34 @@ fun ChatScreen(
     val error by viewModel.error.collectAsState()
     val replyTo by viewModel.replyTo.collectAsState()
     val deliveredIds by viewModel.deliveredIds.collectAsState()
-    val recording by viewModel.recording.collectAsState()
-    val recordingSeconds by viewModel.recordingSeconds.collectAsState()
-    val playingMessageId by viewModel.playingMessageId.collectAsState()
     val voiceDurations by viewModel.voiceDurations.collectAsState()
+    // v3.1.0 voice (worker D): the global VoicePlaybackManager owns
+    // playback and the VoiceRecorder owns recording — the ViewModel's
+    // recording/playing flows are no longer read here.
+    val voiceRecorder = remember { VoiceRecorder() }
+    val isVoiceRecording by voiceRecorder.isRecording.collectAsState()
+    val voiceLocked by voiceRecorder.locked.collectAsState()
+    val playbackState by VoicePlaybackManager.state.collectAsState()
+    var voiceAllowed by remember { mutableStateOf(true) }
+    var voiceSending by remember { mutableStateOf(false) }
+    val chatRepo = remember { ChatRepository() }
+    val privacyRepo = remember { PrivacyRepository() }
     val onlineIds by SessionManager.onlineIds.collectAsState()
     val myId = viewModel.myId
     val colors = pingChatColors
+    // v3.1.0: group header / edit / forward / search / pin state.
+    val isGroup by viewModel.isGroup.collectAsState()
+    val groupName by viewModel.groupName.collectAsState()
+    val groupAvatarUrl by viewModel.groupAvatarUrl.collectAsState()
+    val groupInfo by viewModel.groupInfo.collectAsState()
+    val pinnedMessage by viewModel.pinnedMessage.collectAsState()
+    val editingMessage by viewModel.editingMessage.collectAsState()
+    val searchQuery by viewModel.searchQuery.collectAsState()
+    val searchMatches by viewModel.searchMatches.collectAsState()
+    val searchMatchIndex by viewModel.searchMatchIndex.collectAsState()
+    val forwardTargets by viewModel.forwardTargets.collectAsState()
+    val canSeePeerLastSeen by viewModel.canSeePeerLastSeen.collectAsState()
+    val senderNames = viewModel.senderNames
 
     val peerOnline = peer?.let { onlineIds.contains(it.id) } ?: false
     val clipboard = LocalClipboardManager.current
@@ -180,6 +212,10 @@ fun ChatScreen(
     var confirmClear by remember { mutableStateOf(false) }
     var showProfile by remember { mutableStateOf(false) }
     var viewingPhoto by remember { mutableStateOf<ChatMessage?>(null) }
+    // v3.1.0: search bar, forward picker, group settings overlay.
+    var showSearch by remember { mutableStateOf(false) }
+    var forwardMessage by remember { mutableStateOf<ChatMessage?>(null) }
+    var showGroupSettings by remember { mutableStateOf(false) }
 
     // Gallery picker (photo only — no video, no camera in this version).
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
@@ -193,10 +229,12 @@ fun ChatScreen(
         viewModel.sendPhoto(bytes, mime)
     }
 
-    // Mic permission, then start recording into a temp file.
+    // Mic permission, then start recording into a temp file (v3.1.0:
+    // VoiceRecorder owns the MediaRecorder, so swipe-to-cancel works —
+    // the old ViewModel recorder had no cancel path).
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
-            viewModel.startRecording(File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a"))
+            voiceRecorder.start(File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a"))
         } else {
             Toast.makeText(
                 context,
@@ -205,14 +243,23 @@ fun ChatScreen(
             ).show()
         }
     }
-    fun requestMicAndRecord() {
+    /** Returns true when recording actually started. */
+    fun requestMicAndRecord(): Boolean {
+        if (!voiceAllowed) {
+            Toast.makeText(context, "Voice messages are not allowed in this chat.", Toast.LENGTH_SHORT).show()
+            return false
+        }
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) ==
             PackageManager.PERMISSION_GRANTED
         ) {
-            viewModel.startRecording(File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a"))
-        } else {
-            micPermission.launch(Manifest.permission.RECORD_AUDIO)
+            val started = voiceRecorder.start(File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a"))
+            if (!started) {
+                Toast.makeText(context, "Could not start recording. Try again.", Toast.LENGTH_SHORT).show()
+            }
+            return started
         }
+        micPermission.launch(Manifest.permission.RECORD_AUDIO)
+        return false
     }
 
     // Audio/video calls: mic permission (plus camera for video calls),
@@ -268,16 +315,76 @@ fun ChatScreen(
         }
     }
 
-    // Closing the fullscreen photo viewer consumes it (view-once) —
-    // unless the recipient tapped Keep while viewing, in which case the
-    // message stays in the chat. Consume happens on close (not on open)
-    // so the Keep button gets a chance to be tapped first; the ViewModel
-    // guards the sender + kept messages, and the consume RPC refuses
-    // kept rows as a server-side backstop.
+    // v3.1.0 voice send path (worker D): stop the VoiceRecorder and send
+    // the bytes through the same backend call the old path used, then
+    // refresh the list and push the peer — mirroring
+    // ChatViewModel.send + notifyPeer (which are private to the VM).
+    fun sendVoiceRecording() {
+        if (!voiceRecorder.isRecording.value || voiceSending) return
+        voiceSending = true
+        scope.launch {
+            val bytes = voiceRecorder.stopAndGetBytes()
+            if (bytes == null || bytes.isEmpty()) {
+                voiceSending = false
+                Toast.makeText(context, "Could not record voice message. Try again.", Toast.LENGTH_SHORT).show()
+                return@launch
+            }
+            val sent = chatRepo.sendVoice(conversationId, bytes)
+            voiceSending = false
+            if (sent != null) {
+                viewModel.loadMessages()
+                notifyVoicePeer()
+            } else {
+                Toast.makeText(context, "Could not send voice message. Check your connection and try again.", Toast.LENGTH_SHORT).show()
+            }
+        }
+    }
+
+    fun cancelVoiceRecording() {
+        if (!voiceRecorder.isRecording.value) return
+        voiceRecorder.cancel()
+    }
+
+    /** Best-effort push for a sent voice message (mirrors ChatViewModel.notifyPeer). */
+    fun notifyVoicePeer() {
+        val token = peer?.fcmToken ?: return
+        val myName = SessionManager.profile.value?.fullName?.ifBlank {
+            SessionManager.profile.value?.username
+        } ?: "PingChat"
+        scope.launch {
+            PushSender.sendPush(
+                token, myName, "Sent a voice message",
+                mapOf("type" to "message", "conversationId" to conversationId)
+            )
+        }
+    }
+
+    // 120s auto-send: the recorder stops itself and hands the bytes over.
+    LaunchedEffect(voiceRecorder) {
+        voiceRecorder.onAutoStop = { sendVoiceRecording() }
+    }
+
+    // Voice permission (worker A: PrivacyRepository.canSendVoiceMessageTo
+    // checks the peer's Voice Messages setting + blocks): the mic is
+    // blocked when the peer does not allow voice messages from me.
+    // In a group (peer == null) voice is always allowed.
+    LaunchedEffect(peer?.id) {
+        val id = peer?.id ?: return@LaunchedEffect
+        voiceAllowed = privacyRepo.canSendVoiceMessageTo(id)
+    }
+
+    // Discard an in-progress recording when leaving the chat. Playback
+    // is NOT stopped here — the global VoicePlaybackManager keeps
+    // playing in the background (mini player), that is the feature.
+    DisposableEffect(voiceRecorder) {
+        onDispose { voiceRecorder.release() }
+    }
+
+    // Closing the fullscreen photo viewer just closes it. (v3.1.0:
+    // no view-once — a photo stays in the chat; the server deletes
+    // it 7 days after it was sent, see migration-v310-media-expiry.sql.)
     fun closePhotoViewer() {
-        val v = viewingPhoto
         viewingPhoto = null
-        if (v != null) viewModel.consumeViewOnce(v)
     }
 
     // Seen only counts when the user is actually looking at the chat.
@@ -310,7 +417,24 @@ fun ChatScreen(
 
     val displayItems = remember(messages) { buildDisplayItems(messages).asReversed() }
     LaunchedEffect(messages.size) {
-        if (messages.isNotEmpty()) listState.scrollToItem(0)
+        // Do not yank the list while the user is jumping between search
+        // matches — a new message arriving mid-search must not scroll.
+        if (searchQuery.isBlank() && messages.isNotEmpty()) listState.scrollToItem(0)
+    }
+
+    // Edit mode: prefill the composer with the message being edited.
+    LaunchedEffect(editingMessage) {
+        val target = editingMessage
+        if (target != null) input = target.body
+    }
+
+    // Search: jump to the current match (displayItems is newest-first,
+    // so find the match's position there). Runs on every next/previous.
+    val currentMatchId = searchMatches.getOrNull(searchMatchIndex)
+    LaunchedEffect(currentMatchId) {
+        val id = currentMatchId ?: return@LaunchedEffect
+        val index = displayItems.indexOfFirst { it is ChatListItem.Msg && it.message.id == id }
+        if (index >= 0) listState.scrollToItem(index)
     }
 
     Column(
@@ -322,6 +446,11 @@ fun ChatScreen(
         // video call, audio call, more (profile). statusBarsPadding keeps
         // the header below the system status bar (targetSdk 37 is
         // edge-to-edge, so content otherwise draws under the clock/battery).
+        // v3.1.0: groups show the group photo + name + member count and
+        // NO call buttons (calls stay 1-to-1); tapping a group header
+        // opens group settings. The 1-to-1 status line shows "Last seen …"
+        // only when PrivacyRepository.canSeeLastSeen allows it (worker A
+        // owns that setting — the check lives in ChatViewModel).
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -333,30 +462,170 @@ fun ChatScreen(
             IconButton(onClick = onBack) {
                 Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Back", tint = colors.text)
             }
-            Avatar(profile = peer, size = AvatarSize.SM, online = peerOnline)
+            val headerProfile = if (isGroup) {
+                Profile(
+                    id = conversationId,
+                    username = groupName ?: "Group",
+                    fullName = groupName ?: "Group",
+                    avatarUrl = groupAvatarUrl
+                )
+            } else {
+                peer
+            }
+            Avatar(profile = headerProfile, size = AvatarSize.SM, online = if (isGroup) null else peerOnline)
             Spacer(Modifier.width(10.dp))
-            Column(modifier = Modifier.weight(1f)) {
+            Column(
+                modifier = Modifier
+                    .weight(1f)
+                    .then(
+                        if (isGroup) Modifier.clickable { showGroupSettings = true }
+                        else Modifier
+                    )
+            ) {
                 Text(
-                    text = peer?.fullName?.ifBlank { peer?.username } ?: "…",
+                    text = if (isGroup) groupName?.takeIf { it.isNotBlank() } ?: "Group"
+                    else peer?.fullName?.ifBlank { peer?.username } ?: "…",
                     style = MaterialTheme.typography.titleMedium,
                     color = colors.text,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis
                 )
                 Text(
-                    text = if (peerOnline) "Online" else "Offline",
+                    text = if (isGroup) {
+                        if (typingPeer) "typing…" else "${groupInfo?.memberCount ?: 0} members"
+                    } else if (peerOnline) {
+                        "Online"
+                    } else if (canSeePeerLastSeen && peer?.lastSeen != null) {
+                        "Last seen ${TimeFormat.fmtListTime(peer!!.lastSeen)}"
+                    } else {
+                        "Offline"
+                    },
                     style = MaterialTheme.typography.bodySmall,
-                    color = if (peerOnline) colors.text else colors.muted
+                    color = if (!isGroup && peerOnline) colors.text else colors.muted
                 )
             }
-            IconButton(onClick = { requestCall("video") }) {
-                Icon(Icons.Default.Videocam, contentDescription = "Video call", tint = colors.text)
+            IconButton(onClick = {
+                val opening = !showSearch
+                showSearch = opening
+                if (!opening) viewModel.setSearchQuery("")
+            }) {
+                Icon(Icons.Default.Search, contentDescription = "Search in chat", tint = colors.text)
             }
-            IconButton(onClick = { requestCall("audio") }) {
-                Icon(Icons.Default.Phone, contentDescription = "Audio call", tint = colors.text)
+            if (!isGroup) {
+                IconButton(onClick = { requestCall("video") }) {
+                    Icon(Icons.Default.Videocam, contentDescription = "Video call", tint = colors.text)
+                }
+                IconButton(onClick = { requestCall("audio") }) {
+                    Icon(Icons.Default.Phone, contentDescription = "Audio call", tint = colors.text)
+                }
             }
-            IconButton(onClick = { showProfile = true }) {
+            IconButton(onClick = { if (isGroup) showGroupSettings = true else showProfile = true }) {
                 Icon(Icons.Default.MoreVert, contentDescription = "More", tint = colors.text)
+            }
+        }
+
+        // Voice mini player (v3.1.0, worker D): while a voice message
+        // plays — even after leaving this chat — a compact player sits
+        // at the top of the screen. Tap it to jump back to the message.
+        if (playbackState.messageId != null) {
+            VoiceMiniPlayer(
+                label = "Voice message" + (peer?.fullName?.let { " • $it" } ?: ""),
+                onTap = {
+                    val id = playbackState.messageId ?: return@VoiceMiniPlayer
+                    val idx = displayItems.indexOfFirst {
+                        it is ChatListItem.Msg && it.message.id == id
+                    }
+                    if (idx >= 0) scope.launch { listState.scrollToItem(idx) }
+                }
+            )
+        }
+
+        // In-chat search bar (v3.1.0): type to find text messages; the
+        // arrows jump between matches, oldest first.
+        if (showSearch) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.card)
+                    .padding(horizontal = 12.dp, vertical = 6.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                TextField(
+                    value = searchQuery,
+                    onValueChange = { viewModel.setSearchQuery(it) },
+                    placeholder = { Text("Search messages") },
+                    singleLine = true,
+                    shape = RoundedCornerShape(50),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = colors.inputBg,
+                        unfocusedContainerColor = colors.inputBg,
+                        disabledContainerColor = colors.inputBg,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent
+                    ),
+                    modifier = Modifier.weight(1f)
+                )
+                if (searchMatches.isNotEmpty()) {
+                    Text(
+                        text = "${searchMatchIndex + 1}/${searchMatches.size}",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.muted,
+                        modifier = Modifier.padding(horizontal = 8.dp)
+                    )
+                    IconButton(onClick = { viewModel.previousSearchMatch() }) {
+                        Text("↑", color = colors.text)
+                    }
+                    IconButton(onClick = { viewModel.nextSearchMatch() }) {
+                        Text("↓", color = colors.text)
+                    }
+                }
+                IconButton(onClick = {
+                    showSearch = false
+                    viewModel.setSearchQuery("")
+                }) {
+                    Icon(Icons.Default.Close, contentDescription = "Close search", tint = colors.muted)
+                }
+            }
+        }
+
+        // Pinned message banner (v3.1.0): tap jumps to the message, the
+        // X unpins it. One pinned message per chat, visible to everyone.
+        val pinned = pinnedMessage
+        if (pinned != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.card2)
+                    .clickable {
+                        val index = displayItems.indexOfFirst {
+                            it is ChatListItem.Msg && it.message.id == pinned.id
+                        }
+                        if (index >= 0) scope.launch { listState.scrollToItem(index) }
+                    }
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Icon(Icons.Default.PushPin, contentDescription = null, tint = colors.muted, modifier = Modifier.size(16.dp))
+                Spacer(Modifier.width(8.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        "Pinned message",
+                        style = MaterialTheme.typography.bodySmall,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.text
+                    )
+                    Text(
+                        replyPreview(pinned),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.muted,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                }
+                IconButton(onClick = { viewModel.unpinCurrent() }) {
+                    Icon(Icons.Default.Close, contentDescription = "Unpin", tint = colors.muted)
+                }
             }
         }
 
@@ -417,12 +686,10 @@ fun ChatScreen(
                             tickState = tick,
                             replyTo = replyTarget,
                             reactions = reactions[m.id].orEmpty(),
+                            senderName = if (isGroup && !mine) senderNames[m.senderId] else null,
                             onLongPress = { menuMessage = m },
                             onReactionChipClick = { emoji -> viewModel.toggleReaction(m.id, emoji) },
                             onPhotoClick = { viewingPhoto = it },
-                            onVoiceClick = { viewModel.playVoice(it) },
-                            onKeepClick = { viewModel.keepMessage(it) },
-                            playing = playingMessageId == m.id,
                             voiceDurationSec = voiceDurations[m.id]
                         )
                     }
@@ -441,6 +708,32 @@ fun ChatScreen(
                 style = MaterialTheme.typography.bodySmall,
                 modifier = Modifier.padding(horizontal = 16.dp, vertical = 4.dp)
             )
+        }
+
+        // v3.1.0: edit-mode banner (composer is prefilled; send saves
+        // the edit instead of sending a new message).
+        if (editingMessage != null) {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .background(colors.card2)
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    "Editing message",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.text,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = {
+                    viewModel.cancelEdit()
+                    input = ""
+                }) {
+                    Icon(Icons.Default.Close, contentDescription = "Cancel edit", tint = colors.muted)
+                }
+            }
         }
 
         // Reply preview.
@@ -487,33 +780,16 @@ fun ChatScreen(
                 .padding(horizontal = 8.dp, vertical = 8.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            if (recording) {
-                // Recording in progress: red dot + timer; tap stop to send.
-                Row(
-                    modifier = Modifier
-                        .weight(1f)
-                        .clip(RoundedCornerShape(50))
-                        .background(colors.inputBg)
-                        .padding(horizontal = 16.dp, vertical = 12.dp),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Box(
-                        modifier = Modifier
-                            .size(10.dp)
-                            .clip(CircleShape)
-                            .background(Color.Red)
-                    )
-                    Spacer(Modifier.width(8.dp))
-                    Text(
-                        text = "Recording ${recordingSeconds / 60}:${(recordingSeconds % 60).toString().padStart(2, '0')}",
-                        style = MaterialTheme.typography.bodyMedium,
-                        color = colors.text
-                    )
-                }
-                Spacer(Modifier.width(8.dp))
-                IconButton(onClick = { viewModel.stopRecordingAndSend() }) {
-                    Icon(Icons.Default.Stop, contentDescription = "Stop and send", tint = Color.Red)
-                }
+            if (isVoiceRecording) {
+                // v3.1.0 (worker D): recording bar — live timer + live
+                // waveform; slide-up locks, slide-left cancels. Send and
+                // cancel buttons appear once locked.
+                VoiceRecorderBar(
+                    recorder = voiceRecorder,
+                    onSend = { sendVoiceRecording() },
+                    onCancel = { cancelVoiceRecording() },
+                    modifier = Modifier.weight(1f)
+                )
             } else {
                 TextField(
                     value = input,
@@ -542,15 +818,21 @@ fun ChatScreen(
                     modifier = Modifier.weight(1f)
                 )
                 Spacer(Modifier.width(8.dp))
-                if (input.isNotBlank()) {
-                    // Green send circle (WhatsApp-style).
+                if ((input.isNotBlank() || editingMessage != null) && !isVoiceRecording) {
+                    // Green send circle (WhatsApp-style). In edit mode
+                    // this saves the edit instead of sending a new
+                    // message (v3.1.0).
                     Box(
                         modifier = Modifier
                             .size(44.dp)
                             .clip(CircleShape)
                             .background(Emerald)
                             .clickable(enabled = !sending) {
-                                viewModel.send(input)
+                                if (editingMessage != null) {
+                                    viewModel.saveEdit(input)
+                                } else {
+                                    viewModel.send(input)
+                                }
                                 input = ""
                             },
                         contentAlignment = Alignment.Center
@@ -570,13 +852,26 @@ fun ChatScreen(
                         }
                     }
                 } else {
-                    IconButton(onClick = { requestMicAndRecord() }) {
-                        Icon(
-                            Icons.Default.Mic,
-                            contentDescription = "Record a voice message",
-                            tint = colors.text
-                        )
-                    }
+                    // v3.1.0 (worker D): hold to record, slide up to lock,
+                    // slide left to cancel. Stays mounted while recording
+                    // so the hold gesture is never cut off by recomposition.
+                    VoiceMicButton(
+                        blocked = !voiceAllowed,
+                        recording = isVoiceRecording,
+                        locked = voiceLocked,
+                        onPressStart = { requestMicAndRecord() },
+                        onLock = { voiceRecorder.setLocked(true) },
+                        onCancelArmed = { armed -> voiceRecorder.setCancelArmed(armed) },
+                        onReleaseSend = { sendVoiceRecording() },
+                        onCancel = { cancelVoiceRecording() },
+                        onBlockedTap = {
+                            Toast.makeText(
+                                context,
+                                "Voice messages are not allowed in this chat.",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    )
                 }
             }
         }
@@ -610,6 +905,32 @@ fun ChatScreen(
                 }, modifier = Modifier.fillMaxWidth()) {
                     Text("Reply", modifier = Modifier.fillMaxWidth())
                 }
+                // v3.1.0: edit my own text message (opens edit mode in
+                // the composer) and pin/unpin any message.
+                if (mine && sheetMessage.kind == "text") {
+                    TextButton(onClick = {
+                        viewModel.startEdit(sheetMessage)
+                        menuMessage = null
+                    }, modifier = Modifier.fillMaxWidth()) {
+                        Text("Edit", modifier = Modifier.fillMaxWidth())
+                    }
+                }
+                TextButton(onClick = {
+                    viewModel.loadForwardTargets()
+                    forwardMessage = sheetMessage
+                    menuMessage = null
+                }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Forward", modifier = Modifier.fillMaxWidth())
+                }
+                TextButton(onClick = {
+                    viewModel.togglePin(sheetMessage)
+                    menuMessage = null
+                }, modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        if (sheetMessage.isPinned) "Unpin message" else "Pin message",
+                        modifier = Modifier.fillMaxWidth()
+                    )
+                }
                 if (sheetMessage.kind == "text") {
                     TextButton(onClick = {
                         clipboard.setText(AnnotatedString(sheetMessage.body))
@@ -637,6 +958,56 @@ fun ChatScreen(
         }
     }
 
+    // v3.1.0: forward picker — pick a chat to forward the message to.
+    // The forwarded copy carries a "Forwarded" label; the original
+    // sender's forward setting is checked in ChatViewModel.forwardMessage.
+    val toForward = forwardMessage
+    if (toForward != null) {
+        AlertDialog(
+            onDismissRequest = { forwardMessage = null },
+            title = { Text("Forward to…") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    if (forwardTargets.isEmpty()) {
+                        Text("No other chats yet.", color = colors.muted)
+                    } else {
+                        androidx.compose.foundation.lazy.LazyColumn {
+                            items(forwardTargets, key = { it.conversation.id }) { target ->
+                                ForwardTargetRow(
+                                    item = target,
+                                    onClick = {
+                                        viewModel.forwardMessage(toForward, target.conversation.id)
+                                        forwardMessage = null
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            },
+            confirmButton = {},
+            dismissButton = {
+                TextButton(onClick = { forwardMessage = null }) { Text("Cancel") }
+            }
+        )
+    }
+
+    // v3.1.0: group settings as a fullscreen dialog overlay (no new
+    // navigation route — MainActivity's NavHost is untouched). Leaving
+    // the group closes the chat.
+    if (showGroupSettings && isGroup) {
+        Dialog(
+            onDismissRequest = { showGroupSettings = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            GroupSettingsScreen(
+                conversationId = conversationId,
+                onDismiss = { showGroupSettings = false },
+                onLeaveGroup = { showGroupSettings = false; onBack() }
+            )
+        }
+    }
+
     // Peer profile preview (the peer is always a friend here — info + Close).
     if (showProfile) {
         val p = peer
@@ -657,10 +1028,9 @@ fun ChatScreen(
         }
     }
 
-    // Fullscreen view-once photo viewer. Closing it consumes the photo
-    // for the recipient (see closePhotoViewer above) — unless they tapped
-    // Keep, in which case the message stays in the chat. Tap anywhere
-    // else to close.
+    // Fullscreen photo viewer. Tap anywhere (or the X) to close.
+    // (v3.1.0: no view-once, no Keep — the photo stays in the chat;
+    // the server deletes it 7 days after it was sent.)
     val viewing = viewingPhoto
     if (viewing != null && !viewing.mediaUrl.isNullOrBlank()) {
         Dialog(
@@ -688,34 +1058,6 @@ fun ChatScreen(
                 ) {
                     Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
                 }
-                // Keep: the photo stays in the chat instead of being
-                // deleted when the viewer closes. Recipient only, and
-                // only while the message is not kept yet. "Keep" means
-                // keep in the chat — it does not save a copy to the device.
-                if (viewing.viewOnce && !viewing.kept && viewing.senderId != myId) {
-                    TextButton(
-                        onClick = {
-                            viewModel.keepMessage(viewing)
-                            viewingPhoto = viewing.copy(kept = true)
-                        },
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 32.dp)
-                            .clip(RoundedCornerShape(999.dp))
-                            .background(Color.White.copy(alpha = 0.18f))
-                    ) {
-                        Text("Keep", color = Color.White)
-                    }
-                } else if (viewing.viewOnce && viewing.kept) {
-                    Text(
-                        "Kept in chat",
-                        color = Color.White.copy(alpha = 0.8f),
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier
-                            .align(Alignment.BottomCenter)
-                            .padding(bottom = 40.dp)
-                    )
-                }
             }
         }
     }
@@ -723,6 +1065,24 @@ fun ChatScreen(
 
 /** Short preview text for a replied-to message (photo/voice have no body). */
 private fun replyPreview(message: ChatMessage): String = messageDisplayText(message)
+
+/**
+ * True when a photo/voice message's media is gone: it was sent more than
+ * 7 days ago (created_at), so the server's daily cleanup
+ * (database/migration-v310-media-expiry.sql) has deleted — or will
+ * delete — its row + Storage file. A photo/voice row with no media URL
+ * at all counts as expired too (its file was removed before the row).
+ * Text messages never expire. The client renders expired media as a
+ * "deleted" placeholder instead of a broken bubble, which also covers
+ * the window before the first cron run (or if pg_cron is not enabled
+ * yet) — the age rule is the same on both sides.
+ */
+private fun isMediaExpired(message: ChatMessage): Boolean {
+    if (message.kind != "photo" && message.kind != "voice") return false
+    if (message.mediaUrl.isNullOrBlank()) return true
+    val created = TimeFormat.parse(message.createdAt) ?: return false
+    return created.isBefore(Instant.now().minus(7, ChronoUnit.DAYS))
+}
 
 /** WhatsApp-style encryption notice at the top of a chat. */
 @Composable
@@ -787,12 +1147,10 @@ private fun MessageBubble(
     tickState: TickState?,
     replyTo: ChatMessage?,
     reactions: List<Reaction>,
+    senderName: String? = null,
     onLongPress: () -> Unit,
     onReactionChipClick: (String) -> Unit,
     onPhotoClick: (ChatMessage) -> Unit,
-    onVoiceClick: (ChatMessage) -> Unit,
-    onKeepClick: (ChatMessage) -> Unit,
-    playing: Boolean,
     voiceDurationSec: Int?
 ) {
     val colors = pingChatColors
@@ -829,8 +1187,9 @@ private fun MessageBubble(
                     )
                     // Tap a photo bubble to view it fullscreen; long-press
                     // still opens the menu (React / Reply / Delete).
+                    // An expired photo opens nothing — its file is gone.
                     .combinedClickable(
-                        onClick = { if (message.kind == "photo") onPhotoClick(message) },
+                        onClick = { if (message.kind == "photo" && !isMediaExpired(message)) onPhotoClick(message) },
                         onLongClick = onLongPress
                     )
                     // A photo bubble wraps its image tightly — no padding
@@ -844,6 +1203,26 @@ private fun MessageBubble(
                     )
             ) {
                 Column {
+                    // v3.1.0: group bubbles show the sender's name; a
+                    // forwarded message shows a "Forwarded" label.
+                    if (senderName != null) {
+                        Text(
+                            text = senderName,
+                            style = MaterialTheme.typography.bodySmall,
+                            fontWeight = FontWeight.Bold,
+                            color = Emerald,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis
+                        )
+                    }
+                    if (message.forwardedFrom != null) {
+                        Text(
+                            text = "Forwarded",
+                            style = MaterialTheme.typography.bodySmall,
+                            fontStyle = FontStyle.Italic,
+                            color = colors.muted
+                        )
+                    }
                     if (replyTo != null) {
                         Column(
                             modifier = Modifier
@@ -865,7 +1244,17 @@ private fun MessageBubble(
                     }
                     when (message.kind) {
                         "photo" -> {
-                            if (!message.mediaUrl.isNullOrBlank()) {
+                            // Expired (7+ days old, or no media URL): the
+                            // file is gone — show a placeholder, never a
+                            // broken image. The time/ticks row below stays.
+                            if (isMediaExpired(message)) {
+                                Text(
+                                    text = "এই ছবিটি মুছে ফেলা হয়েছে",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = colors.muted,
+                                    modifier = Modifier.padding(start = 12.dp, end = 8.dp, top = 6.dp)
+                                )
+                            } else if (!message.mediaUrl.isNullOrBlank()) {
                                 AsyncImage(
                                     model = message.mediaUrl,
                                     contentDescription = "Photo",
@@ -893,63 +1282,43 @@ private fun MessageBubble(
                             }
                         }
                         "voice" -> {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                IconButton(
-                                    onClick = { onVoiceClick(message) },
-                                    modifier = Modifier.size(36.dp)
-                                ) {
-                                    Icon(
-                                        if (playing) Icons.Default.Pause else Icons.Default.PlayArrow,
-                                        contentDescription = if (playing) "Stop" else "Play voice message",
-                                        tint = if (mine) colors.bubbleMeText else colors.text
+                            // Expired (7+ days old, or no media URL): the
+                            // file is gone — placeholder text + time/ticks,
+                            // no play button, never a broken bubble.
+                            // (v3.1.0: no view-once, no Keep.)
+                            if (isMediaExpired(message)) {
+                                Row(verticalAlignment = Alignment.Bottom) {
+                                    Text(
+                                        text = "এই ভয়েস মেসেজটি মুছে ফেলা হয়েছে",
+                                        style = MaterialTheme.typography.bodyMedium,
+                                        color = colors.muted,
+                                        modifier = Modifier.weight(1f, fill = false)
                                     )
-                                }
-                                Text(
-                                    text = "Voice message" + if (voiceDurationSec != null) {
-                                        " • ${voiceDurationSec / 60}:${(voiceDurationSec % 60).toString().padStart(2, '0')}"
-                                    } else {
-                                        ""
-                                    },
-                                    style = MaterialTheme.typography.bodyMedium,
-                                    color = if (mine) colors.bubbleMeText else colors.text,
-                                    modifier = Modifier.weight(1f, fill = false)
-                                )
-                                Spacer(Modifier.width(6.dp))
-                                Text(
-                                    text = timeText,
-                                    style = MaterialTheme.typography.bodySmall,
-                                    fontSize = 11.sp,
-                                    color = WhatsAppTickGrey
-                                )
-                                if (mine && tickState != null) {
-                                    Spacer(Modifier.width(2.dp))
-                                    TickIcon(state = tickState, onBubble = true)
-                                }
-                            }
-                            // Keep: the recipient can keep this view-once
-                            // voice message in the chat instead of it being
-                            // deleted after a full listen. Recipient only,
-                            // and only while it is not kept yet. "Keep"
-                            // means keep in the chat — it does not save a
-                            // copy to the device. A kept message renders
-                            // as a normal voice message (this row just
-                            // disappears).
-                            if (message.viewOnce && !message.kept && !mine) {
-                                Row(
-                                    modifier = Modifier.fillMaxWidth(),
-                                    horizontalArrangement = Arrangement.End
-                                ) {
-                                    TextButton(
-                                        onClick = { onKeepClick(message) },
-                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
-                                    ) {
-                                        Text(
-                                            "Keep",
-                                            style = MaterialTheme.typography.bodySmall,
-                                            color = Emerald
-                                        )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        text = timeText,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        fontSize = 11.sp,
+                                        color = WhatsAppTickGrey
+                                    )
+                                    if (mine && tickState != null) {
+                                        Spacer(Modifier.width(2.dp))
+                                        TickIcon(state = tickState, onBubble = true)
                                     }
                                 }
+                            } else {
+                                // v3.1.0 (worker D): WhatsApp-style voice
+                                // bubble — waveform + progress + seek +
+                                // speed, backed by the global
+                                // VoicePlaybackManager.
+                                VoiceMessageBubble(
+                                    message = message,
+                                    mine = mine,
+                                    timeText = timeText,
+                                    tickState = tickState,
+                                    knownDurationSec = voiceDurationSec,
+                                    conversationId = conversationId
+                                )
                             }
                         }
                         else -> {
@@ -967,7 +1336,9 @@ private fun MessageBubble(
                                 )
                                 Spacer(Modifier.width(6.dp))
                                 Text(
-                                    text = timeText,
+                                    // v3.1.0: an edited text message shows
+                                    // an "edited" label next to its time.
+                                    text = timeText + if (message.editedAt != null) " · edited" else "",
                                     style = MaterialTheme.typography.bodySmall,
                                     fontSize = 11.sp,
                                     color = WhatsAppTickGrey
@@ -1025,5 +1396,38 @@ private fun MetaRow(timeText: String, tickState: TickState?, mine: Boolean) {
             Spacer(Modifier.width(2.dp))
             TickIcon(state = tickState, onBubble = true)
         }
+    }
+}
+
+/** One row of the v3.1.0 forward picker: group photo/name or peer avatar. */
+@Composable
+private fun ForwardTargetRow(item: ConversationItem, onClick: () -> Unit) {
+    val colors = pingChatColors
+    val avatarProfile = if (item.isGroup) {
+        Profile(
+            id = item.conversation.id,
+            username = item.displayName,
+            fullName = item.displayName,
+            avatarUrl = item.conversation.groupAvatarUrl
+        )
+    } else {
+        item.peer
+    }
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 8.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Avatar(profile = avatarProfile, size = AvatarSize.SM)
+        Spacer(Modifier.width(12.dp))
+        Text(
+            text = item.displayName,
+            style = MaterialTheme.typography.bodyLarge,
+            color = colors.text,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

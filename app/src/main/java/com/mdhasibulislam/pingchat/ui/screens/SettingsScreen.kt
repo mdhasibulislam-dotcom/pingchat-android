@@ -3,6 +3,7 @@ package com.mdhasibulislam.pingchat.ui.screens
 import android.content.Intent
 import android.provider.Settings
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
@@ -22,6 +23,7 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.CallMade
 import androidx.compose.material.icons.filled.CallMissed
 import androidx.compose.material.icons.filled.CallReceived
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.Button
@@ -69,7 +71,11 @@ fun SettingsScreen(
     viewModel: ProfileViewModel,
     prefs: Prefs,
     darkTheme: Boolean,
-    onDarkThemeChange: (Boolean) -> Unit
+    onDarkThemeChange: (Boolean) -> Unit,
+    // v3.1.0 (worker A): Privacy & Security screen ("privacy_security"
+    // route) and worker G's Privacy Policy ("privacy_policy" route).
+    onPrivacySecurityClick: () -> Unit = {},
+    onPrivacyPolicyClick: () -> Unit = {}
 ) {
     val profile by viewModel.profile.collectAsState()
     val saving by viewModel.saving.collectAsState()
@@ -183,6 +189,15 @@ fun SettingsScreen(
         }
 
         Spacer(Modifier.height(24.dp))
+        Text("Privacy & Security", style = MaterialTheme.typography.titleMedium, color = colors.text, fontWeight = FontWeight.Bold)
+        Spacer(Modifier.height(8.dp))
+        SettingsNavRow(
+            title = "Privacy & Security",
+            subtitle = "Who can see you, message you or call you, blocked users, devices.",
+            onClick = onPrivacySecurityClick
+        )
+
+        Spacer(Modifier.height(24.dp))
         Text("Change password", style = MaterialTheme.typography.titleMedium, color = colors.text, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
         OutlinedTextField(
@@ -246,6 +261,14 @@ fun SettingsScreen(
             style = MaterialTheme.typography.bodySmall,
             color = colors.muted
         )
+        // v3.1.0 (worker A): Privacy Policy row at the very bottom of
+        // Settings — opens worker G's screen ("privacy_policy" route).
+        Spacer(Modifier.height(16.dp))
+        SettingsNavRow(
+            title = "Privacy Policy",
+            subtitle = "How PingChat handles your data.",
+            onClick = onPrivacyPolicyClick
+        )
     }
 }
 
@@ -268,6 +291,29 @@ private fun SettingsRow(
             Text(subtitle, style = MaterialTheme.typography.bodySmall, color = colors.muted)
         }
         Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+/** One tappable navigation row (v3.1.0: Privacy & Security, Privacy Policy). */
+@Composable
+private fun SettingsNavRow(
+    title: String,
+    subtitle: String,
+    onClick: () -> Unit
+) {
+    val colors = pingChatColors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 10.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyMedium, color = colors.text, fontWeight = FontWeight.Medium)
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = colors.muted)
+        }
+        Icon(Icons.Default.ChevronRight, contentDescription = null, tint = colors.muted, modifier = Modifier.size(20.dp))
     }
 }
 
