@@ -31,7 +31,6 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.changedToUpOrCanceled
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -247,7 +246,7 @@ private fun Modifier.voiceSeekGesture(onSeek: (Float) -> Unit): Modifier = point
             while (true) {
                 val event = awaitPointerEvent()
                 val change = event.changes.firstOrNull() ?: break
-                if (change.changedToUpOrCanceled()) break
+                if (!change.pressed && change.previousPressed) break
                 if (!dragged && abs(change.position.x - down.position.x) > 8f) {
                     dragged = true
                 }

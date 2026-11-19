@@ -37,7 +37,6 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.changedToUpOrCanceled
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -421,7 +420,7 @@ fun VoiceMicButton(
                             while (true) {
                                 val event = awaitPointerEvent()
                                 val change = event.changes.firstOrNull() ?: break
-                                if (change.changedToUpOrCanceled()) break
+                                if (!change.pressed && change.previousPressed) break
                             }
                             continue
                         }
@@ -433,7 +432,7 @@ fun VoiceMicButton(
                         while (true) {
                             val event = awaitPointerEvent()
                             val change = event.changes.firstOrNull() ?: break
-                            if (change.changedToUpOrCanceled()) {
+                            if (!change.pressed && change.previousPressed) {
                                 change.consume()
                                 break
                             }
