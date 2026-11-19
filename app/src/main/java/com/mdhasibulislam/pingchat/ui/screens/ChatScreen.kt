@@ -315,6 +315,20 @@ fun ChatScreen(
         }
     }
 
+    /** Best-effort push for a sent voice message (mirrors ChatViewModel.notifyPeer). */
+    fun notifyVoicePeer() {
+        val token = peer?.fcmToken ?: return
+        val myName = SessionManager.profile.value?.fullName?.ifBlank {
+            SessionManager.profile.value?.username
+        } ?: "PingChat"
+        scope.launch {
+            PushSender.sendPush(
+                token, myName, "Sent a voice message",
+                mapOf("type" to "message", "conversationId" to conversationId)
+            )
+        }
+    }
+
     // v3.1.0 voice send path (worker D): stop the VoiceRecorder and send
     // the bytes through the same backend call the old path used, then
     // refresh the list and push the peer — mirroring
@@ -343,20 +357,6 @@ fun ChatScreen(
     fun cancelVoiceRecording() {
         if (!voiceRecorder.isRecording.value) return
         voiceRecorder.cancel()
-    }
-
-    /** Best-effort push for a sent voice message (mirrors ChatViewModel.notifyPeer). */
-    fun notifyVoicePeer() {
-        val token = peer?.fcmToken ?: return
-        val myName = SessionManager.profile.value?.fullName?.ifBlank {
-            SessionManager.profile.value?.username
-        } ?: "PingChat"
-        scope.launch {
-            PushSender.sendPush(
-                token, myName, "Sent a voice message",
-                mapOf("type" to "message", "conversationId" to conversationId)
-            )
-        }
     }
 
     // 120s auto-send: the recorder stops itself and hands the bytes over.
@@ -690,7 +690,8 @@ fun ChatScreen(
                             onLongPress = { menuMessage = m },
                             onReactionChipClick = { emoji -> viewModel.toggleReaction(m.id, emoji) },
                             onPhotoClick = { viewingPhoto = it },
-                            voiceDurationSec = voiceDurations[m.id]
+                            voiceDurationSec = voiceDurations[m.id],
+                            conversationId = conversationId
                         )
                     }
                 }
@@ -1151,7 +1152,8 @@ private fun MessageBubble(
     onLongPress: () -> Unit,
     onReactionChipClick: (String) -> Unit,
     onPhotoClick: (ChatMessage) -> Unit,
-    voiceDurationSec: Int?
+    voiceDurationSec: Int?,
+    conversationId: String
 ) {
     val colors = pingChatColors
     // WhatsApp bubble: one sharp corner on the side it points to (the tail).

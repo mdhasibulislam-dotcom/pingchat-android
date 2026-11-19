@@ -45,6 +45,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
@@ -321,7 +322,7 @@ private fun MyStoryTile(
                         .size(64.dp)
                         .border(
                             3.dp,
-                            if (allSeen) colors.border else UnseenRingBrush,
+                            if (allSeen) SolidColor(colors.border) else UnseenRingBrush,
                             CircleShape
                         )
                         .padding(3.dp),
@@ -378,7 +379,7 @@ private fun FriendStoryTile(group: StoryGroup, onClick: () -> Unit) {
                 .size(64.dp)
                 .border(
                     3.dp,
-                    if (group.allSeen) colors.border else UnseenRingBrush,
+                    if (group.allSeen) SolidColor(colors.border) else UnseenRingBrush,
                     CircleShape
                 )
                 .padding(3.dp)
