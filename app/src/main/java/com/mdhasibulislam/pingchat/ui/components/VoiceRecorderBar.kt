@@ -37,7 +37,7 @@ import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.input.pointer.awaitPointerEventScope
+import androidx.compose.ui.input.pointer.changedToUpOrCanceled
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -49,6 +49,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -414,7 +415,7 @@ fun VoiceMicButton(
                         val down = awaitFirstDown()
                         down.consume()
                         if (blocked) {
-                            currentOnBlockedTap.value()
+                            currentOnBlockedTap()
                             // Wait for the finger to lift before accepting
                             // the next tap.
                             while (true) {
@@ -424,7 +425,7 @@ fun VoiceMicButton(
                             }
                             continue
                         }
-                        var started = currentOnPressStart.value()
+                        var started = currentOnPressStart()
                         var isLocked = false
                         var cancelArmed = false
                         var dx = 0f
@@ -436,28 +437,28 @@ fun VoiceMicButton(
                                 change.consume()
                                 break
                             }
-                            val delta = change.positionChange()
+                            val delta = change.position - change.previousPosition
                             dx += delta.x
                             dy += delta.y
                             change.consume()
                             if (started && !isLocked && dy < -lockThresholdPx) {
                                 isLocked = true
-                                currentOnLock.value()
+                                currentOnLock()
                             }
                             if (started) {
                                 val armed = dx < -cancelThresholdPx
                                 if (armed != cancelArmed) {
                                     cancelArmed = armed
-                                    currentOnCancelArmed.value(armed)
+                                    currentOnCancelArmed(armed)
                                 }
                             }
                         }
                         if (!started) continue
                         if (cancelArmed) {
-                            currentOnCancelArmed.value(false)
-                            currentOnCancel.value()
+                            currentOnCancelArmed(false)
+                            currentOnCancel()
                         } else if (!isLocked) {
-                            currentOnReleaseSend.value()
+                            currentOnReleaseSend()
                         }
                         // Locked: keep recording; the bar's buttons finish it.
                     }
