@@ -214,8 +214,8 @@ fun ChatScreen(
         }
     }
 
-    // Audio/video calls (Phase 2): camera + mic permission, then start a
-    // real WebRTC call to the peer. The peer must be online.
+    // Audio/video calls: mic permission (plus camera for video calls),
+    // then start a real WebRTC call to the peer. The peer must be online.
     val callViewModel: CallViewModel = viewModel()
     val scope = rememberCoroutineScope()
     var pendingCallKind by remember { mutableStateOf<String?>(null) }
@@ -234,7 +234,8 @@ fun ChatScreen(
         } else {
             Toast.makeText(
                 context,
-                "Microphone and camera permission is needed for calls.",
+                if (kind == "video") "Microphone and camera permission is needed for video calls."
+                else "Microphone permission is needed for audio calls.",
                 Toast.LENGTH_SHORT
             ).show()
         }
@@ -245,7 +246,13 @@ fun ChatScreen(
         // online dot: presence can lag a moment, and the peer may be right
         // there with the app open.
         val p = viewModel.peer.value ?: return
-        val needed = arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+        // Audio calls need the microphone only; video calls need the
+        // camera too (v2.0.9: audio no longer demands CAMERA).
+        val needed = if (kind == "video") {
+            arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+        } else {
+            arrayOf(Manifest.permission.RECORD_AUDIO)
+        }
         if (needed.all {
                 ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
             }
