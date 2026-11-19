@@ -338,7 +338,11 @@ class MainActivity : ComponentActivity() {
                                 backStackEntry.arguments?.getString("conversationId") ?: ""
                             ChatScreen(
                                 conversationId = conversationId,
-                                onBack = { navController.popBackStack() }
+                                onBack = { navController.popBackStack() },
+                                // v3.1.1: let "Message" from a nested public
+                                // profile and a just-created group open that
+                                // chat (ChatScreen's onOpenChat param).
+                                onOpenChat = { id -> navController.navigate("chat/$id") }
                             )
                         }
                     }
