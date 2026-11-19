@@ -21,8 +21,8 @@ android {
         // project (tjsalnhtuqqigyhvgpnb). Same package name, so this
         // installs over v2.0.9 — but Supabase Auth is a separate system,
         // so users must register fresh accounts.
-        versionCode = 19
-        versionName = "3.0.2"
+        versionCode = 20
+        versionName = "3.1.0"
     }
 
     // All debug builds share the committed app/debug.keystore, so every CI
@@ -113,6 +113,11 @@ dependencies {
 
     // Avatar images.
     implementation("io.coil-kt:coil-compose:2.7.0")
+
+    // QR codes on the public profile (Share profile, v3.1.0). ZXing core
+    // is free (Apache 2.0), pure Java, no Android dependency — only the
+    // QRCodeWriter is used, rendered into a Bitmap by hand.
+    implementation("com.google.zxing:core:3.5.3")
 
     // WebRTC audio/video calls (kept from v1.0.5).
     // NOTE: org.webrtc:google-webrtc is NO LONGER on Maven Central (Google
