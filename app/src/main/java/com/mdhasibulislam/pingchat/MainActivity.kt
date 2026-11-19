@@ -134,6 +134,14 @@ class MainActivity : ComponentActivity() {
 
             // Route the user to the right screen when the session state changes.
             LaunchedEffect(isLoggedIn) {
+                // The NavHost is only composed once the session has resolved
+                // (isLoggedIn != null), and it sets the graph in its own
+                // LaunchedEffect — which can run AFTER this one. Until the
+                // graph is set, navigate() throws IllegalArgumentException
+                // (v3.0.0 launch crash). currentDestination is null until
+                // the graph exists, so skip: the NavHost's startDestination
+                // already shows the right first screen ("main" / "auth").
+                if (navController.currentDestination == null) return@LaunchedEffect
                 when (isLoggedIn) {
                     true -> {
                         if (navController.currentDestination?.route == "auth") {
@@ -165,6 +173,7 @@ class MainActivity : ComponentActivity() {
             val openChatId by openChatIdState
             LaunchedEffect(openChatId) {
                 if (isLoggedIn == true && openChatId != null &&
+                    navController.currentDestination != null &&
                     navController.currentDestination?.route != "chat/$openChatId"
                 ) {
                     navController.navigate("chat/$openChatId")
