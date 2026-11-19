@@ -101,7 +101,9 @@ dependencies {
     // Firebase Cloud Messaging ONLY (push receiving). Config comes from
     // app/google-services.json (project ping-chat-fcda6); that file is
     // public client config and is committed on purpose. No Firebase Auth,
-    // Firestore or Storage in v3.0.0.
+    // Firestore or Storage in v3.0.0. The Firebase BoM below only pins
+    // the firebase-messaging version — it adds no other Firebase service.
+    implementation(platform("com.google.firebase:firebase-bom:35.2.0"))
     implementation("com.google.firebase:firebase-messaging")
 
     // Google Sign-In (ID token -> Supabase signInWith(IDToken)).
