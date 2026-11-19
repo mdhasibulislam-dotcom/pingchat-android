@@ -13,6 +13,7 @@ import com.mdhasibulislam.pingchat.data.PushSender
 import com.mdhasibulislam.pingchat.data.Reaction
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.TickState
+import com.mdhasibulislam.pingchat.data.TimeFormat
 import com.mdhasibulislam.pingchat.data.TypingPayload
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
@@ -24,6 +25,7 @@ import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.time.Instant
 
 /**
  * One open 1-to-1 chat: messages, read ticks, typing, reactions, deletes.
@@ -98,6 +100,10 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     private var player: MediaPlayer? = null
     private var playingId: String? = null
     private val consumedIds = mutableSetOf<String>()
+    // View-once ids the recipient tapped Keep on. Added synchronously in
+    // keepMessage() (before the network call) so a photo-viewer close or
+    // a voice finishing a moment later can never consume a kept message.
+    private val keptIds = mutableSetOf<String>()
 
     init {
         viewModelScope.launch {
@@ -111,8 +117,10 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         viewModelScope.launch {
             SessionManager.feedTick.collect {
                 delay(250)
+                // loadMessages() marks read once the fresh list lands
+                // (server watermark) — no separate call here, or the
+                // mark would run twice per tick with a stale watermark.
                 loadMessages()
-                markReadIfVisible()
             }
         }
     }
@@ -130,6 +138,11 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
                 _messages.value = list
                 val ids = list.map { it.id }
                 _reactions.value = repo.loadReactions(conversationId, ids)
+                // Messages are in: mark read with the fresh server
+                // watermark. This is the call that matters — the
+                // open-time mark (setVisible) usually runs before the
+                // first load, when no server timestamp is known yet.
+                markReadIfVisible()
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
             }
@@ -316,14 +329,23 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     }
 
     /**
-     * View-once consume: the recipient opening a photo or finishing a
+     * View-once consume: the recipient closing a photo or finishing a
      * voice message deletes the message doc + storage file (the repo
      * refuses the sender / already-consumed / non-participant).
-     * Never consumes my own sent media.
+     * Never consumes my own sent media, and never consumes a message
+     * the recipient kept — the kept flag is resolved against the live
+     * list (the snapshot passed in may predate a Keep tap) and the
+     * consume RPC itself refuses kept rows as a server-side backstop.
      */
     fun consumeViewOnce(message: ChatMessage) {
         if (!message.viewOnce) return
         if (message.senderId == myId) return
+        if (message.kept || keptIds.contains(message.id)) return
+        // Resolve the live row: a Keep tap updates _messages, but the
+        // snapshot handed to this call (e.g. from the photo viewer or
+        // the voice completion listener) may still say kept = false.
+        val current = _messages.value.firstOrNull { it.id == message.id }
+        if (current?.kept == true) return
         if (!consumedIds.add(message.id)) return
         viewModelScope.launch {
             if (repo.consumeMessage(conversationId, message.id)) {
@@ -336,6 +358,33 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
                     val bucket = if (message.kind == "photo") "chat-photos" else "voice-messages"
                     repo.deleteMedia(bucket, path)
                 }
+            }
+        }
+    }
+
+    /**
+     * Keep a view-once message in the chat (recipient only): the message
+     * is NOT deleted after viewing/listening and renders as a normal
+     * photo/voice message afterwards. "Keep" means keep in the chat —
+     * it does not save a copy to the device. The local list is marked
+     * kept synchronously so a consume triggered a moment later (photo
+     * viewer closing, voice finishing) cannot race the network call;
+     * if the update fails, the flag is rolled back.
+     */
+    fun keepMessage(message: ChatMessage) {
+        if (!message.viewOnce) return
+        if (message.senderId == myId) return
+        if (message.kept || !keptIds.add(message.id)) return
+        _messages.update { list ->
+            list.map { if (it.id == message.id) it.copy(kept = true) else it }
+        }
+        viewModelScope.launch {
+            if (!repo.keepMessage(message.id)) {
+                keptIds.remove(message.id)
+                _messages.update { list ->
+                    list.map { if (it.id == message.id) it.copy(kept = false) else it }
+                }
+                _error.value = "Could not keep this message. Try again."
             }
         }
     }
@@ -395,17 +444,39 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         return TickState.SENT
     }
 
-    // ---------- typing (debounced 300ms + throttled 2.5s, like the web app) ----------
+    // ---------- typing (leading-edge send + throttled 2.5s, like the web app) ----------
 
     fun onTyping() {
-        typingDebounceJob?.cancel()
-        typingDebounceJob = viewModelScope.launch {
-            delay(300)
-            val now = System.currentTimeMillis()
-            if (now - typingLastSentAt < 2500) return@launch
+        val now = System.currentTimeMillis()
+        if (now - typingLastSentAt >= 2500) {
+            // Leading edge: broadcast immediately on the first keystroke.
+            // The old code debounced 300ms — every keystroke cancelled the
+            // pending send, so while the user typed continuously (or typed
+            // and hit send within 300ms) NO "typing" broadcast ever went
+            // out and the peer never saw the indicator. The web app sends
+            // on input with no debounce; this matches it.
+            typingDebounceJob?.cancel()
             typingLastSentAt = now
-            val me = repo.myId() ?: return@launch
-            val name = SessionManager.profile.value?.fullName ?: "Someone"
+            sendTypingNow()
+            return
+        }
+        // Inside the 2.5s throttle window: schedule ONE trailing re-send
+        // at the end of the window so the peer's 3s hide-timeout does not
+        // expire while I keep typing. A job is already pending: leave it.
+        if (typingDebounceJob?.isActive == true) return
+        val waitMs = 2500 - (now - typingLastSentAt)
+        typingDebounceJob = viewModelScope.launch {
+            delay(waitMs)
+            typingLastSentAt = System.currentTimeMillis()
+            sendTypingNow()
+        }
+    }
+
+    /** One "typing" broadcast (best-effort, never throws to the caller). */
+    private fun sendTypingNow() {
+        val me = repo.myId() ?: return
+        val name = SessionManager.profile.value?.fullName ?: "Someone"
+        viewModelScope.launch {
             repo.sendTyping(conversationId, TypingPayload(me, name))
         }
     }
@@ -419,10 +490,30 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         }
     }
 
+    /**
+     * Mark this chat read — but only with a SERVER timestamp as the
+     * watermark. unreadCount counts peer messages with created_at >
+     * last_read_at, and created_at is server time, so writing the
+     * device clock here left the newest message unread whenever the
+     * device clock trailed the server (and re-opening the chat re-wrote
+     * the same lagging time, so the badge never cleared). The watermark
+     * is the newest loaded message's created_at; a message created
+     * after it still counts as unread, exactly as it should. Falls
+     * back to device time only when no messages are loaded yet — the
+     * post-load mark in loadMessages() then corrects it. On success,
+     * pokes the chats list: a participants UPDATE fires no feed tick,
+     * so without this the list kept the stale count until the next
+     * message event or tab re-entry. The peer's seen tick is untouched
+     * — it is driven by this same last_read_at write (peerReadFlow).
+     */
     private fun markReadIfVisible() {
         if (!visible) return
+        val readUpTo = _messages.value.mapNotNull { TimeFormat.parse(it.createdAt) }
+            .maxOrNull() ?: Instant.now()
         viewModelScope.launch {
-            repo.markRead(conversationId)
+            if (repo.markRead(conversationId, readUpTo)) {
+                SessionManager.notifyRead()
+            }
         }
     }
 

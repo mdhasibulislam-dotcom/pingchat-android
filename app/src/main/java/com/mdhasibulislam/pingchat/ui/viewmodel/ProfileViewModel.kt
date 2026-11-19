@@ -7,6 +7,8 @@ import com.mdhasibulislam.pingchat.data.ChatRepository
 import com.mdhasibulislam.pingchat.data.FriendsRepository
 import com.mdhasibulislam.pingchat.data.ProfileRepository
 import com.mdhasibulislam.pingchat.data.SessionManager
+import com.mdhasibulislam.pingchat.data.Supabase
+import io.github.jan.supabase.postgrest.from
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -111,13 +113,15 @@ class ProfileViewModel : ViewModel() {
     }
 
     /**
-     * Upload a new profile photo. The web app accepts images up to 2 MB.
+     * Upload a new profile photo. Photos are downscaled/compressed in
+     * the repository before upload; the only client-side rejection left
+     * is the 10 MB 'avatars' bucket limit itself.
      * [ext] is png/webp/gif, else jpg; [contentType] is the image MIME type.
      */
     fun uploadAvatar(bytes: ByteArray, ext: String, contentType: String) {
         val me = repo.myId() ?: return
-        if (bytes.size > 2 * 1024 * 1024) {
-            _error.value = "Photo must be smaller than 2 MB."
+        if (bytes.size > 10 * 1024 * 1024) {
+            _error.value = "Photo must be smaller than 10 MB."
             return
         }
         viewModelScope.launch {
@@ -153,6 +157,42 @@ class ProfileViewModel : ViewModel() {
                 _error.value = AuthRepository.friendlyError(e)
             }
             _saving.value = false
+        }
+    }
+
+    /**
+     * Notifications ON/OFF (Settings, v3.0.2) — the token layer of the
+     * toggle. The preference itself is saved by SettingsScreen (Prefs);
+     * this syncs pingchat_profiles.fcm_token with it: OFF clears the token
+     * so senders' PushSender calls find no token (every sender does
+     * `peer.fcmToken ?: return` / `?.let`), ON re-saves the current FCM
+     * token. Best-effort: a failed write never blocks the toggle — the
+     * persisted preference + the display gate in PingChatMessagingService
+     * still hold. Calls are NOT affected (CallManager, not push).
+     */
+    fun setNotificationsEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            val me = repo.myId() ?: return@launch
+            try {
+                if (enabled) {
+                    val token = Supabase.fcmToken() ?: return@launch
+                    Supabase.client.from("pingchat_profiles").update({
+                        set("fcm_token", token)
+                    }) {
+                        filter { eq("id", me) }
+                    }
+                    _info.value = "Notifications turned on."
+                } else {
+                    Supabase.client.from("pingchat_profiles").update({
+                        set("fcm_token", null as String?)
+                    }) {
+                        filter { eq("id", me) }
+                    }
+                    _info.value = "Notifications turned off."
+                }
+            } catch (e: Exception) {
+                // best-effort — the toggle + display gate still apply
+            }
         }
     }
 

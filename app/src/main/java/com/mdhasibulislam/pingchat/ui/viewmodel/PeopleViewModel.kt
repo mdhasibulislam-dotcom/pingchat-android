@@ -8,6 +8,8 @@ import com.mdhasibulislam.pingchat.data.FriendState
 import com.mdhasibulislam.pingchat.data.FriendsRepository
 import com.mdhasibulislam.pingchat.data.Friendship
 import com.mdhasibulislam.pingchat.data.Profile
+import com.mdhasibulislam.pingchat.data.PushSender
+import com.mdhasibulislam.pingchat.data.SessionManager
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.delay
@@ -90,9 +92,43 @@ class PeopleViewModel : ViewModel() {
             try {
                 repo.sendFriendRequest(userId)
                 _statuses.value = _statuses.value + (userId to FriendState.PENDING_OUT)
+                notifyRecipient(userId)
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
             }
+        }
+    }
+
+    /**
+     * Friend-request push (v3.0.2): tell the recipient a request arrived.
+     * Best-effort only — a failed push must never fail the request itself,
+     * same as the chat-message push in ChatViewModel.notifyPeer and the
+     * call push in CallManager. The recipient's fcm_token comes from their
+     * profile (directory cache first, fresh load as fallback);
+     * PushSender.sendPush swallows its own errors and returns false.
+     */
+    private fun notifyRecipient(userId: String) {
+        viewModelScope.launch {
+            val recipient = _users.value.firstOrNull { it.id == userId }
+                ?: repo.loadProfile(userId)
+                ?: return@launch
+            val token = recipient.fcmToken ?: return@launch
+            val myName = SessionManager.profile.value?.fullName?.ifBlank {
+                SessionManager.profile.value?.username
+            } ?: "PingChat"
+            val myId = repo.myId() ?: return@launch
+            val myAvatar = SessionManager.profile.value?.avatarUrl ?: ""
+            PushSender.sendPush(
+                token,
+                "$myName sent you a friend request",
+                "Tap to view and respond",
+                mapOf(
+                    "type" to "friend_request",
+                    "senderId" to myId,
+                    "senderName" to myName,
+                    "senderAvatar" to myAvatar
+                )
+            )
         }
     }
 
@@ -111,6 +147,19 @@ class PeopleViewModel : ViewModel() {
         viewModelScope.launch {
             try {
                 repo.respondFriendRequest(requesterId, accept)
+                if (accept) {
+                    // v3.0.2: auto-create the 1-to-1 conversation so the new
+                    // friend appears in the Chats list right away (both
+                    // sides — the RPC inserts both participant rows, so the
+                    // requester's list picks it up too). Best-effort: a
+                    // failure here must NEVER fail the accept itself.
+                    try {
+                        chatRepo.getOrCreateConversation(requesterId)
+                    } catch (e: Exception) {
+                        // Accept already succeeded; the chat appears on
+                        // first message instead (openChat creates it).
+                    }
+                }
                 refresh()
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
