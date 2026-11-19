@@ -1,0 +1,12 @@
+-- PingChat Android v3 — raise the avatars bucket limit from 2 MB to 10 MB.
+-- Run once in the Supabase Dashboard > SQL Editor for project
+-- tjsalnhtuqqigyhvgpnb ("hasibulialam's Project"). IDEMPOTENT — safe to
+-- run again.
+--
+-- WHY THIS EXISTS: the v3 schema set the 'avatars' bucket file_size_limit
+-- to 2097152 (2 MB), so a ~2 MB profile photo fails to upload at the
+-- Storage layer. The app also downscales/compresses avatars client-side
+-- before upload (ProfileRepository), so most uploads stay far below this;
+-- the 10 MB limit is the server-side ceiling for the occasional photo
+-- that cannot be compressed (e.g. an animated GIF).
+UPDATE storage.buckets SET file_size_limit = 10485760 WHERE id = 'avatars';
