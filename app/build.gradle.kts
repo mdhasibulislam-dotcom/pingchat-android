@@ -16,8 +16,8 @@ android {
         // v2.0.0: full backend move from Supabase to Firebase. Same package
         // name, so this installs over v1.0.5 — but Firebase Auth is a
         // separate system, so users must register fresh accounts.
-        versionCode = 15
-        versionName = "2.0.8"
+        versionCode = 16
+        versionName = "2.0.9"
     }
 
     // All debug builds share the committed app/debug.keystore, so every CI
