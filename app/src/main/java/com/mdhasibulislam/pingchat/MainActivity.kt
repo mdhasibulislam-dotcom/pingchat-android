@@ -39,9 +39,9 @@ import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.mdhasibulislam.pingchat.data.CallManager
-import com.mdhasibulislam.pingchat.data.FirebaseConfig
 import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.data.SessionManager
+import com.mdhasibulislam.pingchat.data.Supabase
 import com.mdhasibulislam.pingchat.ui.screens.ActiveCallScreen
 import com.mdhasibulislam.pingchat.ui.screens.ChatScreen
 import com.mdhasibulislam.pingchat.ui.screens.ForgotPasswordScreen
@@ -77,25 +77,22 @@ class MainActivity : ComponentActivity() {
         // Notification tap / Open chat action carries the chat to open.
         intent.getStringExtra("conversationId")?.let { openChatIdState.value = it }
 
-        // Start the session BEFORE the first frame: Firebase restores the
-        // saved login synchronously, so the app knows right away whether
-        // to open chats or the login screen (no login flash).
+        // Start the session BEFORE the first frame: GoTrue restores the
+        // saved session asynchronously (isLoggedIn starts null and flips
+        // when the session loads), so the app shows the splash until it
+        // knows whether to open chats or the login screen (no login flash).
         SessionManager.start()
 
         // Native Google sign-in: the Google ID token is exchanged with
-        // Firebase Auth (signInWithCredential). The OAuth Web client ID
-        // comes from google-services.json at runtime (present since the
-        // fresh google-services.json — Google provider enabled in the
-        // console); if it is missing, the Google button shows a friendly
-        // message and email login works.
-        val googleClientId = FirebaseConfig.googleWebClientId(this)
-        if (googleClientId != null) {
-            val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
-                .requestIdToken(googleClientId)
-                .requestEmail()
-                .build()
-            googleSignInClient = GoogleSignIn.getClient(this, gso)
-        }
+        // Supabase Auth (signInWith(IDToken)). The OAuth Web client ID is
+        // the constant in SupabaseClient.kt (the same Web client that is
+        // configured in the Supabase console for the new project).
+        val googleClientId = Supabase.GOOGLE_WEB_CLIENT_ID
+        val gso = GoogleSignInOptions.Builder(GoogleSignInOptions.DEFAULT_SIGN_IN)
+            .requestIdToken(googleClientId)
+            .requestEmail()
+            .build()
+        googleSignInClient = GoogleSignIn.getClient(this, gso)
 
         setContent {
             val prefs = remember { Prefs(applicationContext) }
@@ -106,7 +103,7 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(Unit) {
                 SessionManager.start()
             }
-            // Calls: watch Firestore for ringing calls addressed to me
+            // Calls: watch Realtime Broadcast for ringing calls addressed to me
             // when signed in (so incoming calls ring), stop on sign-out.
             val currentUser by SessionManager.user.collectAsState()
             LaunchedEffect(isLoggedIn, currentUser?.uid) {
@@ -219,7 +216,7 @@ class MainActivity : ComponentActivity() {
                                 if (googleSignInClient == null) {
                                     authViewModel.googleError(
                                         "Google sign-in is not turned on yet — enable Google " +
-                                            "in the Firebase console (see README), " +
+                                            "in the Supabase console (see README), " +
                                             "or use email login."
                                     )
                                 } else {
