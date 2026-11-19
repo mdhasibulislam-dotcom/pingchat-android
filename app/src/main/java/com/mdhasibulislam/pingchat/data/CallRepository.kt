@@ -3,6 +3,7 @@ package com.mdhasibulislam.pingchat.data
 import io.github.jan.supabase.annotations.SupabaseInternal
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.query.Order
 import io.github.jan.supabase.realtime.RealtimeChannel
 import io.github.jan.supabase.realtime.broadcast
 import io.github.jan.supabase.realtime.broadcastFlow
@@ -164,6 +165,87 @@ class CallRepository {
         updateCall(callId, patch)
     }
 
+    // ---------- per-user call history (pingchat_call_history) ----------
+
+    /**
+     * Record one side's own history entry for a finished call. Best-effort:
+     * history must never break the call itself. The row belongs to
+     * [userId], so deleting it later removes the history for that user
+     * only — the other side keeps theirs.
+     */
+    suspend fun insertCallHistory(
+        userId: String,
+        callId: String,
+        peerId: String,
+        peerName: String?,
+        kind: String,
+        direction: String,
+        status: String,
+        startedAt: String?,
+        endedAt: String?,
+        durationSeconds: Int?
+    ) {
+        try {
+            client.from("pingchat_call_history").insert(
+                buildJsonObject {
+                    put("user_id", userId)
+                    put("call_id", callId)
+                    put("peer_id", peerId)
+                    if (peerName != null) put("peer_name", peerName)
+                    put("kind", kind)
+                    put("direction", direction)
+                    put("status", status)
+                    if (startedAt != null) put("started_at", startedAt)
+                    if (endedAt != null) put("ended_at", endedAt)
+                    if (durationSeconds != null) put("duration_seconds", durationSeconds)
+                }
+            )
+        } catch (e: Exception) {
+            // call history is best-effort
+        }
+    }
+
+    /** My history, newest first (last 100). */
+    suspend fun loadCallHistoryRows(): List<CallHistoryRow> {
+        val me = myId() ?: return emptyList()
+        return try {
+            client.from("pingchat_call_history").select {
+                filter { eq("user_id", me) }
+                order("created_at", Order.DESCENDING)
+                limit(100)
+            }.decodeList<CallHistoryRow>()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /** Profiles for a set of user ids (avatars + current names for history rows). */
+    suspend fun loadProfilesByIds(ids: List<String>): Map<String, Profile> {
+        if (ids.isEmpty()) return emptyMap()
+        return try {
+            client.from("pingchat_profiles").select {
+                filter { isIn("id", ids.distinct()) }
+            }.decodeList<Profile>().associateBy { it.id }
+        } catch (e: Exception) {
+            emptyMap()
+        }
+    }
+
+    /** Delete ONE of my history entries (the other side keeps theirs). */
+    suspend fun deleteCallHistory(id: String) {
+        val me = myId() ?: return
+        try {
+            client.from("pingchat_call_history").delete {
+                filter {
+                    eq("id", id)
+                    eq("user_id", me)
+                }
+            }
+        } catch (e: Exception) {
+            throw e
+        }
+    }
+
     /** The other side's profile (for the incoming-call screen). */
     suspend fun loadProfile(userId: String): Profile? {
         return try {
@@ -294,14 +376,16 @@ class CallRepository {
      * Broadcasts arrive live; the sweep below also catches a call that
      * started while this app was closed (push tap opens the app after the
      * broadcast already went out) — any still-ringing row for me from the
-     * last 60 seconds is emitted once when collection starts.
+     * last 7 days is emitted once when collection starts if it is still
+     * inside the 30s ring window, or marked missed (with a history entry)
+     * if the ring already timed out while the app was closed.
      */
     @OptIn(SupabaseInternal::class)
     fun incomingOfferFlow(): Flow<CallOfferPayload> = flow {
         val me = myId()
         if (me != null) {
             try {
-                val cutoff = Instant.now().minusSeconds(60).toString()
+                val cutoff = Instant.now().minusSeconds(7 * 24 * 3600).toString()
                 val ringing = client.from("pingchat_calls").select {
                     filter {
                         eq("callee_id", me)
@@ -310,6 +394,28 @@ class CallRepository {
                     }
                 }.decodeList<CallRow>()
                 ringing.forEach { row ->
+                    // A row older than the 30s ring timeout is a call I
+                    // missed while the app was closed: it will never ring
+                    // now, so mark it missed and save my history entry.
+                    val created = TimeFormat.parse(row.createdAt)
+                    val ageSeconds = if (created == null) 0
+                        else java.time.Duration.between(created, Instant.now()).seconds
+                    if (ageSeconds >= CALL_TIMEOUT_MS / 1000) {
+                        markMissed(row.id)
+                        insertCallHistory(
+                            userId = me,
+                            callId = row.id,
+                            peerId = row.callerId,
+                            peerName = row.callerName,
+                            kind = row.kind,
+                            direction = "incoming",
+                            status = "missed",
+                            startedAt = null,
+                            endedAt = null,
+                            durationSeconds = null
+                        )
+                        return@forEach
+                    }
                     val offer = row.offerSdp ?: return@forEach
                     callPeers[row.id] = row.callerId
                     emit(

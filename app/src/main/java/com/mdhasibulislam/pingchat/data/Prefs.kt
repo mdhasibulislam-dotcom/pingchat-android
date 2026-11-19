@@ -18,4 +18,14 @@ class Prefs(context: Context) {
     var pushPrompted: Boolean
         get() = sp.getBoolean("push_prompted", false)
         set(value) { sp.edit().putBoolean("push_prompted", value).apply() }
+
+    /**
+     * Push notifications ON/OFF (Settings, v3.0.2). Default ON. OFF stops
+     * notifications two ways: PingChatMessagingService will not display
+     * them, and the fcm_token is cleared from the profile so senders find
+     * no token to push to. Calls are NOT affected (CallManager, not push).
+     */
+    var notificationsEnabled: Boolean
+        get() = sp.getBoolean("notifications_enabled", true)
+        set(value) { sp.edit().putBoolean("notifications_enabled", value).apply() }
 }

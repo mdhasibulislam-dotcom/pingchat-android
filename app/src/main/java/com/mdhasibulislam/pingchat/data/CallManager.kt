@@ -35,6 +35,7 @@ import org.webrtc.SessionDescription
 import org.webrtc.SurfaceTextureHelper
 import org.webrtc.VideoSource
 import org.webrtc.VideoTrack
+import java.time.Instant
 import java.util.UUID
 
 /**
@@ -109,6 +110,10 @@ object CallManager {
     private var currentConversationId: String? = null
     private var currentDirection: String? = null
     private var currentOffer: SdpJson? = null
+    /** True once the pingchat_calls row for this call exists (insertCall
+     *  succeeded for the caller, or the offer arrived for the callee) —
+     *  only then is there a finished call worth recording in history. */
+    private var callRowExists = false
     private var callStartedAtMillis: Long? = null
     private var noAnswerJob: Job? = null
     private var timerJob: Job? = null
@@ -263,6 +268,7 @@ object CallManager {
             endCallInternal(null)
             return "Could not reach the other side. Check your connection and try again."
         }
+        callRowExists = true
         // WhatsApp-style ring: push the callee even if the app is closed.
         peer.fcmToken?.let { token ->
             scope.launch {
@@ -288,6 +294,12 @@ object CallManager {
                 // Busy: auto-decline so the caller is not left ringing.
                 repo.sendCallEnd(payload.callId, "declined")
                 repo.markDeclined(payload.callId)
+                recordHistory(
+                    callId = payload.callId, peerId = payload.from.id,
+                    peerName = payload.from.name, kind = payload.kind,
+                    direction = "incoming", status = "missed",
+                    startedAtMillis = null, durationSec = null
+                )
                 return@launch
             }
             val peerProfile = repo.loadProfile(payload.from.id)
@@ -300,6 +312,7 @@ object CallManager {
             currentConversationId = payload.conversationId
             currentDirection = "incoming"
             currentOffer = payload.sdp
+            callRowExists = true
             _incoming.value = IncomingCall(
                 callId = payload.callId,
                 conversationId = payload.conversationId,
@@ -316,6 +329,12 @@ object CallManager {
                     stopRingtone()
                     _incoming.value = null
                     repo.markMissed(payload.callId)
+                    recordHistory(
+                        callId = payload.callId, peerId = payload.from.id,
+                        peerName = payload.from.name, kind = payload.kind,
+                        direction = "incoming", status = "missed",
+                        startedAtMillis = null, durationSec = null
+                    )
                     clearCurrent()
                 }
             }
@@ -340,6 +359,11 @@ object CallManager {
                 repo.sendCallEnd(inc.callId, "declined")
                 repo.markDeclined(inc.callId)
             }
+            recordHistory(
+                callId = inc.callId, peerId = inc.peerId, peerName = inc.peerName,
+                kind = inc.kind, direction = "incoming", status = "declined",
+                startedAtMillis = null, durationSec = null
+            )
             clearCurrent()
             return "Microphone/camera unavailable. Check the permission and try again."
         }
@@ -347,6 +371,13 @@ object CallManager {
         val peer = peerProfile ?: Profile(id = inc.peerId, username = "", fullName = inc.peerName)
         val pc = makePeerConnection(inc.callId, inc.peerId) ?: run {
             stopLocalTracks()
+            // Nothing is sent to the caller here, so they time out and see
+            // it as missed — same on my side.
+            recordHistory(
+                callId = inc.callId, peerId = inc.peerId, peerName = inc.peerName,
+                kind = inc.kind, direction = "incoming", status = "missed",
+                startedAtMillis = null, durationSec = null
+            )
             clearCurrent()
             return "Could not answer call. Try again."
         }
@@ -450,6 +481,11 @@ object CallManager {
         noAnswerJob?.cancel()
         stopRingtone()
         _incoming.value = null
+        recordHistory(
+            callId = inc.callId, peerId = inc.peerId, peerName = inc.peerName,
+            kind = inc.kind, direction = "incoming", status = "declined",
+            startedAtMillis = null, durationSec = null
+        )
         repo.sendCallEnd(inc.callId, "declined")
         repo.markDeclined(inc.callId)
         clearCurrent()
@@ -535,6 +571,12 @@ object CallManager {
             noAnswerJob?.cancel()
             stopRingtone()
             _incoming.value = null
+            // A call the caller cancelled while ringing is a missed call for us.
+            recordHistory(
+                callId = inc.callId, peerId = inc.peerId, peerName = inc.peerName,
+                kind = inc.kind, direction = "incoming", status = "missed",
+                startedAtMillis = null, durationSec = null
+            )
             clearCurrent()
             return
         }
@@ -717,8 +759,64 @@ object CallManager {
 
     // ---------- teardown ----------
 
+    /**
+     * Save my own history row for a finished call (best-effort, never
+     * throws — the insert itself swallows errors). Each side records its
+     * own row, so deleting it later removes the history for me only.
+     */
+    private fun recordHistory(
+        callId: String,
+        peerId: String,
+        peerName: String?,
+        kind: String,
+        direction: String,
+        status: String,
+        startedAtMillis: Long?,
+        durationSec: Int?
+    ) {
+        val me = myId ?: return
+        val startedAt = startedAtMillis?.let { Instant.ofEpochMilli(it).toString() }
+        scope.launch {
+            repo.insertCallHistory(
+                userId = me,
+                callId = callId,
+                peerId = peerId,
+                peerName = peerName,
+                kind = kind,
+                direction = direction,
+                status = status,
+                startedAt = startedAt,
+                endedAt = Instant.now().toString(),
+                durationSeconds = durationSec.takeIf { status == "ended" }
+            )
+        }
+    }
+
     /** Local teardown only (remote side ended/declined, or an error). */
     private fun endCallInternal(message: String?) {
+        // A session with a calls row is a finished call: save my history
+        // entry before the state is torn down. Setup failures (no row yet)
+        // and repeat teardowns (session already null) record nothing.
+        val s = _session.value
+        val callId = currentCallId
+        val peerId = currentPeerId
+        val kind = currentKind
+        val direction = currentDirection
+        if (s != null && callRowExists && callId != null && peerId != null &&
+            kind != null && direction != null
+        ) {
+            val answered = s.status == CallStatus.ACTIVE && callStartedAtMillis != null
+            recordHistory(
+                callId = callId,
+                peerId = peerId,
+                peerName = s.peer.fullName.ifBlank { s.peer.username }.takeIf { it.isNotBlank() },
+                kind = kind,
+                direction = direction,
+                status = if (answered) "ended" else "unanswered",
+                startedAtMillis = callStartedAtMillis,
+                durationSec = s.durationSec.takeIf { answered }
+            )
+        }
         noAnswerJob?.cancel()
         timerJob?.cancel()
         detachCallListeners()
@@ -740,6 +838,7 @@ object CallManager {
         currentConversationId = null
         currentDirection = null
         currentOffer = null
+        callRowExists = false
         callStartedAtMillis = null
         if (message != null) _error.value = message
     }
@@ -775,6 +874,7 @@ object CallManager {
         currentConversationId = null
         currentDirection = null
         currentOffer = null
+        callRowExists = false
         pendingCandidates.clear()
     }
 

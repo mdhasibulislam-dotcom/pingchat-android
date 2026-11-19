@@ -20,8 +20,8 @@ import com.mdhasibulislam.pingchat.R
  *
  * Sending goes through the Supabase Edge Function `send-push` (see
  * PushSender.kt): it sends a data message with title, body, type
- * ("message" or "call") and conversationId, and this service shows it as
- * a notification that opens the app.
+ * ("message", "call" or "friend_request") and conversationId / senderId,
+ * and this service shows it as a notification that opens the app.
  *
  * v2.0.8 style (Hasibul's choice): the app logo as the notification
  * image, a Reply action that answers from the notification bar itself
@@ -32,6 +32,7 @@ class PingChatMessagingService : FirebaseMessagingService() {
 
     companion object {
         const val EXTRA_CONVERSATION_ID = "conversationId"
+        const val EXTRA_FRIEND_REQUEST = "friendRequest"
         const val EXTRA_NOTIFICATION_ID = "notificationId"
         const val KEY_REPLY_TEXT = "reply_text"
         const val ACTION_REPLY = "com.mdhasibulislam.pingchat.REPLY"
@@ -45,18 +46,27 @@ class PingChatMessagingService : FirebaseMessagingService() {
 
     override fun onMessageReceived(message: RemoteMessage) {
         super.onMessageReceived(message)
+        // v3.0.2: notifications toggle (Settings) — OFF means do not show
+        // anything at all. The fcm_token is also cleared while OFF (see
+        // ProfileViewModel.setNotificationsEnabled), so senders should not
+        // push in the first place; this is the second layer, for any push
+        // that still arrives. Calls are NOT gated here — CallManager
+        // handles incoming calls, not this toggle.
+        if (!Prefs(applicationContext).notificationsEnabled) return
         val data = message.data
         val title = data["title"] ?: message.notification?.title ?: return
         val body = data["body"] ?: message.notification?.body ?: ""
         val conversationId = data["conversationId"]
+        val senderId = data["senderId"]
         val type = data["type"] ?: "message"
-        showNotification(title, body, conversationId, type)
+        showNotification(title, body, conversationId, senderId, type)
     }
 
     private fun showNotification(
         title: String,
         body: String,
         conversationId: String?,
+        senderId: String?,
         type: String
     ) {
         val channelId = "pingchat-messages"
@@ -68,15 +78,23 @@ class PingChatMessagingService : FirebaseMessagingService() {
         )
         manager.createNotificationChannel(channel)
 
-        // One notification per conversation, so a reply dismisses the
-        // right one and a new message replaces the old one.
+        // One notification per conversation (messages/calls), one per sender
+        // (friend requests), so a reply dismisses the right one and a new
+        // message replaces the old one.
         val notificationId = conversationId?.hashCode()
+            ?: senderId?.hashCode()
             ?: (System.currentTimeMillis() % Int.MAX_VALUE).toInt()
 
-        // Tap the notification (or the Open chat button) -> open the chat.
+        // Tap the notification (or the action button) -> open the chat, or
+        // the People tab for a friend request (type=friend_request carries
+        // no conversationId).
         val openIntent = Intent(this, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK
-            if (conversationId != null) putExtra(EXTRA_CONVERSATION_ID, conversationId)
+            if (type == "friend_request") {
+                putExtra(EXTRA_FRIEND_REQUEST, true)
+            } else if (conversationId != null) {
+                putExtra(EXTRA_CONVERSATION_ID, conversationId)
+            }
         }
         val openPendingIntent = PendingIntent.getActivity(
             this, notificationId, openIntent,
@@ -93,7 +111,11 @@ class PingChatMessagingService : FirebaseMessagingService() {
             .setContentIntent(openPendingIntent)
             // App logo as the notification image (not the sender's photo).
             .setLargeIcon(BitmapFactory.decodeResource(resources, R.mipmap.ic_launcher))
-            .addAction(0, "Open chat", openPendingIntent)
+            .addAction(
+                0,
+                if (type == "friend_request") "View request" else "Open chat",
+                openPendingIntent
+            )
 
         // Reply from the notification bar (messages only — not calls).
         if (type == "message" && conversationId != null) {

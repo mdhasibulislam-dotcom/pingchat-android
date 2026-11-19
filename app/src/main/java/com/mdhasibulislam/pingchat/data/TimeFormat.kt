@@ -58,6 +58,15 @@ object TimeFormat {
         }
     }
 
+    /** Call duration: "0:42" / "12:34" / "1:02:03". */
+    fun fmtDuration(seconds: Int): String {
+        val h = seconds / 3600
+        val m = (seconds % 3600) / 60
+        val s = seconds % 60
+        return if (h > 0) "$h:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}"
+        else "$m:${s.toString().padStart(2, '0')}"
+    }
+
     /** "Today at 10:24 PM" / "Yesterday at 10:24 PM" / "Nov 16 at 10:24 PM". */
     fun dayLabel(iso: String?): String {
         val t = parse(iso) ?: return ""

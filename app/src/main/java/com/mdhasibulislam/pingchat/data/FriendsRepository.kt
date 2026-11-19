@@ -61,6 +61,17 @@ class FriendsRepository {
         )
     }
 
+    /** One profile by id (for the friend-request push recipient token). */
+    suspend fun loadProfile(userId: String): Profile? {
+        return try {
+            client.from("pingchat_profiles").select {
+                filter { eq("id", userId) }
+            }.decodeSingleOrNull<Profile>()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
     suspend fun respondFriendRequest(requesterId: String, accept: Boolean) {
         client.postgrest.rpc(
             "pingchat_respond_friend_request",

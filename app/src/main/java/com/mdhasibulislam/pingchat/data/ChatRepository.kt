@@ -38,7 +38,7 @@ import kotlinx.serialization.json.put
  *   last_message_id, last_sender_id (denormalized preview, refreshed on send)
  * - pingchat_conversation_participants: conversation_id, user_id, last_read_at
  * - pingchat_messages: sender_id, body, kind (text/voice/photo), reply_to_id,
- *   media_url, media_path, view_once, consumed_at, deleted_by [uuid]
+ *   media_url, media_path, view_once, kept, consumed_at, deleted_by [uuid]
  * - pingchat_message_reactions: message_id, user_id, emoji (one row per user)
  * - Typing + presence are Realtime Broadcast / Presence — no tables.
  *
@@ -197,20 +197,34 @@ class ChatRepository {
         }
     }
 
-    /** Mark a conversation read (only when the user is actually looking at it). */
-    suspend fun markRead(conversationId: String) {
-        val me = myId() ?: return
-        try {
+    /**
+     * Mark a conversation read (only when the user is actually looking at
+     * it). [readUpTo] is the watermark: every message created at or before
+     * it counts as read. It MUST be a server timestamp (the newest loaded
+     * message's created_at) — unreadCount compares created_at (server
+     * time) against last_read_at, so the old device-clock Instant.now()
+     * left the newest message unread whenever the device clock trailed
+     * the server, and re-opening the chat re-wrote the same lagging time
+     * so the badge never cleared. Falls back to device time only when
+     * the caller has no server timestamp (no messages loaded yet).
+     * Returns true when the update landed, so the caller can tell the
+     * chats list to re-read (a participants UPDATE fires no feed tick).
+     */
+    suspend fun markRead(conversationId: String, readUpTo: Instant? = null): Boolean {
+        val me = myId() ?: return false
+        return try {
             client.from("pingchat_conversation_participants").update(
-                { set("last_read_at", Instant.now().toString()) }
+                { set("last_read_at", (readUpTo ?: Instant.now()).toString()) }
             ) {
                 filter {
                     eq("conversation_id", conversationId)
                     eq("user_id", me)
                 }
             }
+            true
         } catch (e: Exception) {
             // read markers are best-effort
+            false
         }
     }
 
@@ -321,6 +335,28 @@ class ChatRepository {
                 "pingchat_consume_voice_message",
                 buildJsonObject { put("p_message_id", messageId) }
             ).decodeAs<Boolean>()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Keep a view-once message in the chat: sets kept = true on the row
+     * (PostgREST update). The migration-message-kept.sql RLS policy only
+     * lets the RECIPIENT of a view-once message do this, and the consume
+     * RPC refuses kept rows, so a kept message is never deleted.
+     * Returns true only when the row came back with kept = true.
+     * "Keep" means keep in the chat — it does NOT save a copy to the device.
+     */
+    suspend fun keepMessage(messageId: String): Boolean {
+        return try {
+            val updated = client.from("pingchat_messages").update(
+                { set("kept", true) }
+            ) {
+                filter { eq("id", messageId) }
+                select()
+            }.decodeSingleOrNull<ChatMessage>()
+            updated?.kept == true
         } catch (e: Exception) {
             false
         }
@@ -541,15 +577,31 @@ class ChatRepository {
 
     // ---------- presence (who is online) + global feed (SessionManager) ----------
 
-    /** The "online" presence channel. Presence key = user id (same as the web app). */
+    /**
+     * The "online" presence channel. Presence key = user id (same as the web app).
+     *
+     * Creation only — this does NOT subscribe. The presence listener must be
+     * attached BEFORE subscribing (see SessionManager.startPresence): the
+     * server sends the full presence_state — everyone already online — as
+     * soon as we subscribe, and presenceChangeFlow only emits changes that
+     * arrive after the listener is attached. Subscribe with
+     * [subscribePresence], after the collector is running.
+     */
     suspend fun presenceChannel(myId: String): RealtimeChannel {
-        val channel = RealtimeChannels.get("online") {
+        return RealtimeChannels.get("online") {
             client.realtime.channel("online") {
                 presence { key = myId }
             }
         }
+    }
+
+    /**
+     * Subscribe the "online" channel (blocks until SUBSCRIBED, 10s cap in
+     * RealtimeChannels). Call only AFTER the presenceFlow collector is
+     * attached — never before.
+     */
+    suspend fun subscribePresence() {
         RealtimeChannels.ensureSubscribed("online", block = true)
-        return channel
     }
 
     /** Emits (joinedUserIds, leftUserIds) on every presence change. */

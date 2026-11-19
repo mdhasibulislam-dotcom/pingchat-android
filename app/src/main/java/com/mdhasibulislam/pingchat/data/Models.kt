@@ -53,6 +53,9 @@ data class ChatMessage(
     @SerialName("media_url") val mediaUrl: String? = null,
     @SerialName("media_path") val mediaPath: String? = null,
     @SerialName("view_once") val viewOnce: Boolean = false,
+    /** True when the recipient tapped Keep on a view-once message: the
+     *  message then stays in the chat instead of being consumed. */
+    @SerialName("kept") val kept: Boolean = false,
     @SerialName("consumed_at") val consumedAt: String? = null,
     @SerialName("deleted_by") val deletedBy: List<String> = emptyList(),
     /** Reactions live in pingchat_message_reactions, not on the message row. */
@@ -95,6 +98,35 @@ data class CallRow(
     @SerialName("ended_at") val endedAt: String? = null,
     @SerialName("duration_seconds") val durationSeconds: Int? = null,
     @SerialName("created_at") val createdAt: String = ""
+)
+
+/**
+ * One side's own call-history entry (Supabase: pingchat_call_history,
+ * migration-call-history.sql). One row per user per finished call, so
+ * deleting it removes the history for that user only.
+ * status: ended (answered, has duration) / missed (incoming, unanswered)
+ * / declined (incoming, declined by me) / unanswered (outgoing, no answer).
+ */
+@Serializable
+data class CallHistoryRow(
+    @SerialName("id") val id: String,
+    @SerialName("user_id") val userId: String,
+    @SerialName("call_id") val callId: String? = null,
+    @SerialName("peer_id") val peerId: String,
+    @SerialName("peer_name") val peerName: String? = null,
+    @SerialName("kind") val kind: String = "audio",
+    @SerialName("direction") val direction: String = "outgoing",
+    @SerialName("status") val status: String = "ended",
+    @SerialName("started_at") val startedAt: String? = null,
+    @SerialName("ended_at") val endedAt: String? = null,
+    @SerialName("duration_seconds") val durationSeconds: Int? = null,
+    @SerialName("created_at") val createdAt: String = ""
+)
+
+/** One history row with the peer's profile (for avatar + current name). */
+data class CallHistoryItem(
+    val row: CallHistoryRow,
+    val peer: Profile?
 )
 
 /** Typing broadcast payload on channel "typing:<conversationId>". */
