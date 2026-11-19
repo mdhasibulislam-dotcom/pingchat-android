@@ -37,7 +37,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -45,7 +44,6 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import com.mdhasibulislam.pingchat.data.FirebaseConfig
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.AuthViewModel
@@ -186,24 +184,24 @@ fun LoginScreen(
     onForgotClick: () -> Unit
 ) {
     val state by viewModel.state.collectAsState()
-    var email by remember { mutableStateOf("") }
+    var login by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     AuthShell(title = "Welcome back", subtitle = "Log in to PingChat") {
         AuthMessage(state)
         OutlinedTextField(
-            value = email,
-            onValueChange = { email = it },
-            label = { Text("Email") },
+            value = login,
+            onValueChange = { login = it },
+            label = { Text("Email or username") },
             singleLine = true,
             shape = AuthFieldShape,
-            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
+            keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text),
             modifier = Modifier.fillMaxWidth()
         )
         Spacer(Modifier.height(12.dp))
         PasswordField(value = password, onValueChange = { password = it }, label = "Password")
         Spacer(Modifier.height(16.dp))
         Button(
-            onClick = { viewModel.login(email, password) },
+            onClick = { viewModel.login(login, password) },
             enabled = !state.loading,
             shape = AuthFieldShape,
             modifier = Modifier.fillMaxWidth()
@@ -219,15 +217,6 @@ fun LoginScreen(
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text("No account yet?", style = MaterialTheme.typography.bodyMedium)
             TextButton(onClick = onRegisterClick) { Text("Register") }
-        }
-        if (FirebaseConfig.googleWebClientId(LocalContext.current) == null) {
-            Spacer(Modifier.height(12.dp))
-            Text(
-                "Google sign-in is not turned on yet (enable Google in the Firebase console — see README). Email login works now.",
-                style = MaterialTheme.typography.bodySmall,
-                color = pingChatColors.muted,
-                textAlign = TextAlign.Center
-            )
         }
     }
 }

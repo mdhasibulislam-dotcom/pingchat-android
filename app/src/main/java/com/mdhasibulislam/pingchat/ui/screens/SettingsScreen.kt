@@ -103,7 +103,7 @@ fun SettingsScreen(
             Icon(Icons.Default.Notifications, contentDescription = null, tint = colors.muted, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
             Text(
-                "Your device is linked to your account on sign-in (Firebase Cloud Messaging). " +
+                "Your device is linked to your account on sign-in so push notifications can reach this phone (Firebase Cloud Messaging). " +
                     "When someone messages or calls you, a push notification is sent to this phone. " +
                     "If notifications stop arriving, sign out and back in once.",
                 style = MaterialTheme.typography.bodyMedium,
