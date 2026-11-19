@@ -1,6 +1,7 @@
 package com.mdhasibulislam.pingchat.ui.components
 
 import android.media.MediaRecorder
+import android.os.SystemClock
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -77,6 +78,16 @@ class VoiceRecorder {
 
         /** Live waveform history kept (newest last). */
         const val AMPLITUDE_HISTORY = 40
+
+        /**
+         * Minimum recording length. MediaRecorder.stop() throws
+         * (RuntimeException: "stop failed") when it is called before the
+         * encoder has produced any audio — a tap, or a release that lands
+         * within a frame of the press. stopAndGetBytes() waits out the
+         * remainder of this window so a short hold still sends a valid
+         * ~1s voice note instead of failing with null bytes.
+         */
+        const val MIN_RECORD_MS = 1000L
     }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
@@ -84,6 +95,8 @@ class VoiceRecorder {
     private var outputFile: File? = null
     private var tickerJob: Job? = null
     private var autoStopFired = false
+    /** Elapsed-realtime clock value when the current recording started. */
+    private var startTimeMs = 0L
 
     private val _isRecording = MutableStateFlow(false)
     val isRecording: StateFlow<Boolean> = _isRecording.asStateFlow()
@@ -110,8 +123,9 @@ class VoiceRecorder {
     @Suppress("DEPRECATION")
     fun start(file: File): Boolean {
         if (_isRecording.value) return false
+        var rec: MediaRecorder? = null
         return try {
-            val rec = MediaRecorder()
+            rec = MediaRecorder()
             rec.setAudioSource(MediaRecorder.AudioSource.MIC)
             rec.setOutputFormat(MediaRecorder.OutputFormat.MPEG_4)
             rec.setAudioEncoder(MediaRecorder.AudioEncoder.AAC)
@@ -121,6 +135,7 @@ class VoiceRecorder {
             recorder = rec
             outputFile = file
             autoStopFired = false
+            startTimeMs = SystemClock.elapsedRealtime()
             _seconds.value = 0
             _amplitudes.value = emptyList()
             _locked.value = false
@@ -129,6 +144,12 @@ class VoiceRecorder {
             startTicker()
             true
         } catch (_: Exception) {
+            // A half-built MediaRecorder holds the mic until released —
+            // without this, one failed start breaks every later attempt.
+            try {
+                rec?.release()
+            } catch (_: Exception) {
+            }
             false
         }
     }
@@ -144,6 +165,12 @@ class VoiceRecorder {
         outputFile = null
         _locked.value = false
         _cancelArmed.value = false
+        // MediaRecorder.stop() throws when almost no audio was captured
+        // yet (a tap, or a release within a frame of the press). Let the
+        // recording run until MIN_RECORD_MS so stop() succeeds and the
+        // file holds a real, playable .m4a instead of failing outright.
+        val elapsed = SystemClock.elapsedRealtime() - startTimeMs
+        if (elapsed < MIN_RECORD_MS) delay(MIN_RECORD_MS - elapsed)
         val bytes = try {
             rec.stop()
             rec.release()
@@ -239,9 +266,14 @@ class VoiceRecorder {
 
 /**
  * Recording bar shown in the composer while recording: red dot, live
- * timer, live waveform from the real mic level, and — once locked —
- * trash (cancel) + send buttons. While held (not locked) the hint
- * explains slide-left to cancel / slide-up to lock.
+ * timer, live waveform from the real mic level, and trash (cancel) +
+ * send buttons. The buttons are shown for the whole recording, not
+ * only once locked: a recording can start without a live hold gesture
+ * (the mic-permission dialog grants mid-press, and the mic button
+ * leaves composition when recording starts), so the bar's buttons are
+ * the only finish path in those cases — without them the recording
+ * runs until the 120s auto-send or the chat is left. While held (not
+ * locked) the hint explains slide-left to cancel / slide-up to lock.
  */
 @Composable
 fun VoiceRecorderBar(
@@ -321,20 +353,24 @@ fun VoiceRecorderBar(
                         x += step
                     }
                 }
-                if (locked) {
-                    IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
-                        Icon(
-                            Icons.Default.Delete,
-                            contentDescription = "Cancel recording",
-                            tint = Color.Red
-                        )
-                    }
-                    Box(
-                        modifier = Modifier
-                            .size(36.dp)
-                            .clip(CircleShape)
-                            .background(Emerald)
-                            .clickable { onSend() },
+                // Trash (cancel) + send are always visible while
+                // recording — see the KDoc above: when the hold gesture
+                // is gone (button unmounted, or the recording started
+                // from the permission dialog), these are the only way
+                // to finish. When locked they are the same buttons.
+                IconButton(onClick = onCancel, modifier = Modifier.size(36.dp)) {
+                    Icon(
+                        Icons.Default.Delete,
+                        contentDescription = "Cancel recording",
+                        tint = Color.Red
+                    )
+                }
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Emerald)
+                        .clickable { onSend() },
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
@@ -344,7 +380,6 @@ fun VoiceRecorderBar(
                             modifier = Modifier.size(18.dp)
                         )
                     }
-                }
             }
         }
         if (!locked) {
