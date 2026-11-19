@@ -439,7 +439,7 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         }
     }
 
-    /** Live typing indicator from the peer (Firestore typing doc). */
+    /** Live typing indicator from the peer (Realtime Broadcast). */
     private fun startTypingFlows() {
         viewModelScope.launch {
             try {

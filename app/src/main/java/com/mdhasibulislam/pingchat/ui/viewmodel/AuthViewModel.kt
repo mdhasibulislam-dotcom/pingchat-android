@@ -43,19 +43,24 @@ class AuthViewModel : ViewModel() {
 
     fun clearMessage() = _state.update { it.copy(error = null, info = null, needsConfirmation = false) }
 
-    fun login(email: String, password: String) {
-        if (!emailRe.matches(email.trim())) {
-            _state.update { it.copy(error = "Enter a valid email address.") }
-            return
-        }
-        if (password.isEmpty()) {
-            _state.update { it.copy(error = "Enter your password.") }
-            return
+    fun login(login: String, password: String) {
+        val id = login.trim()
+        when {
+            id.isEmpty() ->
+                return _state.update { it.copy(error = "Enter your email or username.") }
+            id.contains("@") && !emailRe.matches(id) ->
+                return _state.update { it.copy(error = "Enter a valid email address.") }
+            !id.contains("@") && !usernameRe.matches(id.lowercase()) ->
+                return _state.update { it.copy(error = "Enter a valid email or username.") }
+            password.isEmpty() ->
+                return _state.update { it.copy(error = "Enter your password.") }
         }
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
             try {
-                repo.signIn(email.trim(), password)
+                // A username (no "@") is resolved to its email first;
+                // an email signs in directly. No phone-number login.
+                repo.signInWithUsernameOrEmail(id, password)
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = AuthRepository.friendlyError(e)) }
                 return@launch
@@ -75,10 +80,22 @@ class AuthViewModel : ViewModel() {
             _state.update { it.copy(usernameHint = "Use 3–20 letters, numbers or underscores.", usernameOk = false) }
             return
         }
-        // Availability can only be checked once signed in (the Firestore
-        // rules deny reads to signed-out users), so the real check happens
-        // inside register() — here only the format is validated.
-        _state.update { it.copy(usernameHint = "@$v looks good — availability is checked when you register.", usernameOk = true) }
+        // Live availability check (the RPC works before sign-in).
+        _state.update { it.copy(usernameHint = "Checking @$v…", usernameOk = false) }
+        viewModelScope.launch {
+            val free = try {
+                repo.isUsernameAvailable(v)
+            } catch (e: Exception) {
+                null
+            }
+            _state.update {
+                when (free) {
+                    true -> it.copy(usernameHint = "@$v is available.", usernameOk = true)
+                    false -> it.copy(usernameHint = "@$v is already taken.", usernameOk = false)
+                    null -> it.copy(usernameHint = "@$v looks good — availability is checked when you register.", usernameOk = true)
+                }
+            }
+        }
     }
 
     fun register(name: String, username: String, email: String, password: String, password2: String) {
@@ -92,18 +109,28 @@ class AuthViewModel : ViewModel() {
         }
         viewModelScope.launch {
             _state.update { it.copy(loading = true, error = null) }
-            try {
-                // signUp creates the account first and checks the username
-                // afterwards (the check needs a signed-in user — checking
-                // before sign-up was always denied and wrongly reported as
-                // "already taken"). If the name is taken, signUp rolls the
-                // new account back and throws.
+            val signedIn = try {
+                // The username is checked before the account is created
+                // (the RPC works before sign-in), so a taken name never
+                // creates a stray account.
                 repo.signUp(name.trim(), uname, email.trim(), password)
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = AuthRepository.friendlyError(e)) }
                 return@launch
             }
-            // Firebase signs the new user in immediately — no confirmation
+            if (!signedIn) {
+                // "Confirm email" is OFF in this project, so this only
+                // happens if the setting is ever turned back on.
+                _state.update {
+                    it.copy(
+                        loading = false,
+                        needsConfirmation = true,
+                        info = "Account created — check your email for the confirmation link, then log in."
+                    )
+                }
+                return@launch
+            }
+            // Supabase signs the new user in immediately — no confirmation
             // link step. SessionManager picks up the session and routes
             // to chats.
             _state.update { it.copy(loading = false) }
