@@ -1,5 +1,7 @@
 package com.mdhasibulislam.pingchat.ui.screens
 
+import android.content.Intent
+import android.provider.Settings
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -30,8 +32,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.app.NotificationManagerCompat
 import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
@@ -50,6 +54,7 @@ fun SettingsScreen(
     val error by viewModel.error.collectAsState()
     val info by viewModel.info.collectAsState()
     val colors = pingChatColors
+    val context = LocalContext.current
     var ringtone by remember { mutableStateOf(prefs.ringtoneEnabled) }
     var isPublic by remember(profile?.isPublic) { mutableStateOf(profile?.isPublic ?: true) }
     var newPassword by remember { mutableStateOf("") }
@@ -104,6 +109,22 @@ fun SettingsScreen(
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.text2
             )
+        }
+        // v2.0.9: if notifications are off (permission denied, or turned
+        // off later), offer a shortcut to the system notification settings.
+        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = {
+                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
+                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+                    }
+                    context.startActivity(intent)
+                },
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text("Turn on notifications")
+            }
         }
 
         Spacer(Modifier.height(24.dp))
