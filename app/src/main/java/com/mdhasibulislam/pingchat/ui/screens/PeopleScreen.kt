@@ -172,6 +172,10 @@ fun PeopleScreen(
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
+                                // Tap the row to see who sent it: the sender's
+                                // profile (photo, name, bio, online status)
+                                // with Accept / Decline on that same view.
+                                .clickable { onPreview(profile, FriendState.PENDING_IN) }
                                 .padding(horizontal = 16.dp, vertical = 12.dp),
                             verticalAlignment = Alignment.CenterVertically
                         ) {

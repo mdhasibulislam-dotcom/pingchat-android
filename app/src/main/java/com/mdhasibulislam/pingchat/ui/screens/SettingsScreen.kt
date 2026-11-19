@@ -2,6 +2,9 @@ package com.mdhasibulislam.pingchat.ui.screens
 
 import android.content.Intent
 import android.provider.Settings
+import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.combinedClickable
+import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -11,20 +14,30 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.CallMade
+import androidx.compose.material.icons.filled.CallMissed
+import androidx.compose.material.icons.filled.CallReceived
 import androidx.compose.material.icons.filled.Notifications
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -34,11 +47,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.core.app.NotificationManagerCompat
+import androidx.lifecycle.viewmodel.compose.viewModel
+import com.mdhasibulislam.pingchat.data.CallHistoryItem
 import com.mdhasibulislam.pingchat.data.Prefs
+import com.mdhasibulislam.pingchat.data.Profile
+import com.mdhasibulislam.pingchat.data.TimeFormat
+import com.mdhasibulislam.pingchat.ui.components.Avatar
+import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
+import com.mdhasibulislam.pingchat.ui.viewmodel.CallHistoryViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
 
 /** Settings — theme, privacy, ringtone, notifications, change password, log out. */
@@ -56,6 +78,10 @@ fun SettingsScreen(
     val colors = pingChatColors
     val context = LocalContext.current
     var ringtone by remember { mutableStateOf(prefs.ringtoneEnabled) }
+    // v3.0.2: push notifications ON/OFF — persisted in Prefs, reflects the
+    // saved value whenever Settings is opened.
+    var notificationsEnabled by remember { mutableStateOf(prefs.notificationsEnabled) }
+    var notificationsHint by remember { mutableStateOf<String?>(null) }
     var isPublic by remember(profile?.isPublic) { mutableStateOf(profile?.isPublic ?: true) }
     var newPassword by remember { mutableStateOf("") }
     var newPassword2 by remember { mutableStateOf("") }
@@ -99,15 +125,44 @@ fun SettingsScreen(
         Spacer(Modifier.height(20.dp))
         Text("Notifications", style = MaterialTheme.typography.titleMedium, color = colors.text, fontWeight = FontWeight.Bold)
         Spacer(Modifier.height(8.dp))
+        // v3.0.2: real ON/OFF toggle. OFF stops push notifications on this
+        // phone (display gate + fcm_token cleared, see ProfileViewModel);
+        // ON restores them. Calls are NOT affected — they ring via
+        // CallManager, not push notifications.
+        SettingsRow(
+            title = "Push notifications",
+            subtitle = "Get notified on this phone when someone messages or calls you.",
+            checked = notificationsEnabled,
+            onCheckedChange = { enabled ->
+                notificationsEnabled = enabled
+                prefs.notificationsEnabled = enabled
+                if (enabled && !NotificationManagerCompat.from(context).areNotificationsEnabled()) {
+                    notificationsHint =
+                        "Notifications are blocked in your phone's system settings — " +
+                            "tap \"Turn on notifications\" below to allow them."
+                } else {
+                    notificationsHint = null
+                }
+                viewModel.setNotificationsEnabled(enabled)
+            }
+        )
+        Spacer(Modifier.height(8.dp))
         Row(verticalAlignment = Alignment.CenterVertically) {
             Icon(Icons.Default.Notifications, contentDescription = null, tint = colors.muted, modifier = Modifier.size(20.dp))
             Spacer(Modifier.width(8.dp))
             Text(
-                "Your device is linked to your account on sign-in so push notifications can reach this phone (Firebase Cloud Messaging). " +
-                    "When someone messages or calls you, a push notification is sent to this phone. " +
+                "When someone messages or calls you, a push notification is sent to this phone. " +
                     "If notifications stop arriving, sign out and back in once.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.text2
+            )
+        }
+        if (notificationsHint != null) {
+            Spacer(Modifier.height(8.dp))
+            Text(
+                notificationsHint ?: "",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.error
             )
         }
         // v2.0.9: if notifications are off (permission denied, or turned
@@ -216,26 +271,138 @@ private fun SettingsRow(
     }
 }
 
-/** Calls tab placeholder — audio/video calls are Phase 2. */
+/** Calls tab: my call history, newest first (WhatsApp-style list). A
+ *  finished call is recorded for each side separately, so long-pressing
+ *  a row deletes that entry for me only — the other side keeps theirs. */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun CallsScreen() {
+    val viewModel: CallHistoryViewModel = viewModel()
+    val history by viewModel.history.collectAsState()
+    val loading by viewModel.loading.collectAsState()
     val colors = pingChatColors
-    Column(
+    var menuItem by remember { mutableStateOf<CallHistoryItem?>(null) }
+
+    // Refresh every time the tab is opened — a call can finish while
+    // another tab is showing.
+    LaunchedEffect(Unit) { viewModel.refresh() }
+
+    Column(modifier = Modifier.fillMaxSize()) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(modifier = Modifier.weight(1f)) {
+                Text("Calls", style = MaterialTheme.typography.headlineMedium, color = colors.text)
+                Text("Your recent calls.", style = MaterialTheme.typography.bodyMedium, color = colors.muted)
+            }
+            if (loading) CircularProgressIndicator(modifier = Modifier.size(20.dp), strokeWidth = 2.dp)
+        }
+        if (history.isEmpty() && !loading) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .padding(24.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
+                Icon(Icons.Default.Phone, contentDescription = null, tint = colors.muted, modifier = Modifier.size(56.dp))
+                Spacer(Modifier.height(16.dp))
+                Text("No calls yet", style = MaterialTheme.typography.titleLarge, color = colors.text)
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    "Start a call from any chat — tap the phone or video button at the top.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.muted,
+                    textAlign = TextAlign.Center
+                )
+            }
+        } else {
+            LazyColumn(modifier = Modifier.fillMaxSize()) {
+                items(history, key = { it.row.id }) { item ->
+                    CallHistoryRow(item = item, onLongPress = { menuItem = item })
+                }
+            }
+        }
+    }
+
+    // Long-press menu (same bottom-sheet pattern as the chat message menu).
+    val deleting = menuItem
+    if (deleting != null) {
+        ModalBottomSheet(
+            onDismissRequest = { menuItem = null },
+            sheetState = rememberModalBottomSheetState()
+        ) {
+            Column(modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp)) {
+                TextButton(
+                    onClick = { viewModel.delete(deleting); menuItem = null },
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text("Delete", color = MaterialTheme.colorScheme.error, modifier = Modifier.fillMaxWidth())
+                }
+                TextButton(onClick = { menuItem = null }, modifier = Modifier.fillMaxWidth()) {
+                    Text("Cancel", modifier = Modifier.fillMaxWidth())
+                }
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+}
+
+/** One history row: peer avatar + name, direction/status, date/time, duration. */
+@OptIn(ExperimentalFoundationApi::class)
+@Composable
+private fun CallHistoryRow(item: CallHistoryItem, onLongPress: () -> Unit) {
+    val colors = pingChatColors
+    val row = item.row
+    // WhatsApp-style: a missed incoming call is red, everywhere in the row.
+    val missed = row.status == "missed" && row.direction == "incoming"
+    val displayProfile = item.peer ?: Profile(
+        id = row.peerId, username = "", fullName = row.peerName ?: "Unknown"
+    )
+    val kindLabel = if (row.kind == "video") "Video call" else "Voice call"
+    val statusLabel = when (row.status) {
+        "missed" -> "Missed $kindLabel"
+        "declined" -> "Declined $kindLabel"
+        "unanswered" -> "No answer"
+        else -> "${if (row.direction == "outgoing") "Outgoing" else "Incoming"} $kindLabel"
+    }
+    val duration = row.durationSeconds
+        ?.takeIf { row.status == "ended" }
+        ?.let { TimeFormat.fmtDuration(it) }
+    val subtitle = buildString {
+        append(statusLabel)
+        if (duration != null) append(" · $duration")
+        append(" · ${TimeFormat.dayLabel(row.createdAt)}")
+    }
+    val directionIcon = when {
+        missed -> Icons.Default.CallMissed
+        row.direction == "outgoing" -> Icons.Default.CallMade
+        else -> Icons.Default.CallReceived
+    }
+    val accent = if (missed) MaterialTheme.colorScheme.error else colors.muted
+    Row(
         modifier = Modifier
-            .fillMaxSize()
-            .padding(24.dp),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = androidx.compose.foundation.layout.Arrangement.Center
+            .fillMaxWidth()
+            .combinedClickable(onClick = {}, onLongClick = onLongPress)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
     ) {
-        Icon(Icons.Default.Phone, contentDescription = null, tint = colors.muted, modifier = Modifier.size(56.dp))
-        Spacer(Modifier.height(16.dp))
-        Text("Audio & video calls", style = MaterialTheme.typography.titleLarge, color = colors.text)
-        Spacer(Modifier.height(8.dp))
-        Text(
-            "Start a call from any chat — tap the phone or video button at the top.",
-            style = MaterialTheme.typography.bodyMedium,
-            color = colors.muted,
-            textAlign = androidx.compose.ui.text.style.TextAlign.Center
-        )
+        Avatar(profile = displayProfile, size = AvatarSize.MD)
+        Spacer(Modifier.width(12.dp))
+        Column(modifier = Modifier.weight(1f)) {
+            Text(
+                displayProfile.fullName.ifBlank { displayProfile.username },
+                style = MaterialTheme.typography.titleMedium,
+                color = if (missed) MaterialTheme.colorScheme.error else colors.text,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = accent)
+        }
+        Spacer(Modifier.width(8.dp))
+        Icon(directionIcon, contentDescription = null, tint = accent, modifier = Modifier.size(20.dp))
     }
 }

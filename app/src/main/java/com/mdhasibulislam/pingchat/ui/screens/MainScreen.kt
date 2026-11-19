@@ -31,6 +31,7 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -66,9 +67,22 @@ fun MainScreen(
     onSettingsClick: () -> Unit,
     darkTheme: Boolean,
     onDarkThemeChange: (Boolean) -> Unit,
-    prefs: Prefs
+    prefs: Prefs,
+    // Friend-request notification tap (v3.0.2): open the People tab, where
+    // pending requests sit at the top. There is no separate requests route —
+    // tabs are local state, not navigation destinations.
+    openPeopleTab: Boolean = false,
+    onPeopleTabConsumed: () -> Unit = {}
 ) {
     var tab by remember { mutableIntStateOf(0) }
+    // Friend-request notification tap: switch to the People tab (2) once,
+    // whether the app cold-started on it or was already running.
+    LaunchedEffect(openPeopleTab) {
+        if (openPeopleTab) {
+            tab = 2
+            onPeopleTabConsumed()
+        }
+    }
     var showProfile by remember { mutableStateOf(false) }
     val chatsViewModel: ChatsViewModel = viewModel()
     val peopleViewModel: PeopleViewModel = viewModel()
@@ -244,8 +258,10 @@ fun MainScreen(
             },
             onAddFriend = { peopleViewModel.sendRequest(profile.id) },
             onCancelRequest = { peopleViewModel.cancelRequest(profile.id) },
-            onAccept = { peopleViewModel.respond(profile.id, true) },
-            onDecline = { peopleViewModel.respond(profile.id, false) },
+            // Responding from the preview closes it; PeopleViewModel.respond
+            // refreshes the requests list, so the row disappears.
+            onAccept = { peopleViewModel.respond(profile.id, true); preview = null },
+            onDecline = { peopleViewModel.respond(profile.id, false); preview = null },
             onDismiss = { preview = null }
         )
     }

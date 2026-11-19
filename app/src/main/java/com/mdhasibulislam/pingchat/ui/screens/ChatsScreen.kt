@@ -26,6 +26,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextField
 import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -58,6 +59,12 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
     val myId = SessionManager.user.collectAsState().value?.uid
     val colors = pingChatColors
     var query by remember { mutableStateOf("") }
+    // v3.0.2: reload every time the Chats screen is opened / returned to.
+    // MainScreen only composes the selected tab, so this runs on every
+    // switch to Chats and on return from a chat — a newly accepted
+    // friend's empty conversation produces no message feed tick, so
+    // without this the list would stay stale until app restart.
+    LaunchedEffect(Unit) { viewModel.refresh() }
     // 0 = Chat (all conversations), 1 = Active (online people only).
     var tab by remember { mutableStateOf(0) }
 

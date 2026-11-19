@@ -15,6 +15,7 @@ import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -267,10 +268,15 @@ fun ChatScreen(
         }
     }
 
-    // Opening a photo as the recipient consumes it (view-once): the row
-    // is deleted from the database. The ViewModel guards the sender.
-    LaunchedEffect(viewingPhoto) {
+    // Closing the fullscreen photo viewer consumes it (view-once) —
+    // unless the recipient tapped Keep while viewing, in which case the
+    // message stays in the chat. Consume happens on close (not on open)
+    // so the Keep button gets a chance to be tapped first; the ViewModel
+    // guards the sender + kept messages, and the consume RPC refuses
+    // kept rows as a server-side backstop.
+    fun closePhotoViewer() {
         val v = viewingPhoto
+        viewingPhoto = null
         if (v != null) viewModel.consumeViewOnce(v)
     }
 
@@ -289,6 +295,9 @@ fun ChatScreen(
         onDispose {
             lifecycleOwner.lifecycle.removeObserver(observer)
             viewModel.setVisible(false)
+            // Leaving mid-typing: tell the peer at once so their typing
+            // indicator clears instead of lingering on its 3s timeout.
+            viewModel.onTypingStopped()
         }
     }
 
@@ -412,6 +421,7 @@ fun ChatScreen(
                             onReactionChipClick = { emoji -> viewModel.toggleReaction(m.id, emoji) },
                             onPhotoClick = { viewingPhoto = it },
                             onVoiceClick = { viewModel.playVoice(it) },
+                            onKeepClick = { viewModel.keepMessage(it) },
                             playing = playingMessageId == m.id,
                             voiceDurationSec = voiceDurations[m.id]
                         )
@@ -647,20 +657,21 @@ fun ChatScreen(
         }
     }
 
-    // Fullscreen view-once photo viewer. Opening it as the recipient
-    // already triggered consume (see LaunchedEffect above), so the row
-    // disappears from the chat; tap anywhere to close.
+    // Fullscreen view-once photo viewer. Closing it consumes the photo
+    // for the recipient (see closePhotoViewer above) — unless they tapped
+    // Keep, in which case the message stays in the chat. Tap anywhere
+    // else to close.
     val viewing = viewingPhoto
     if (viewing != null && !viewing.mediaUrl.isNullOrBlank()) {
         Dialog(
-            onDismissRequest = { viewingPhoto = null },
+            onDismissRequest = { closePhotoViewer() },
             properties = DialogProperties(usePlatformDefaultWidth = false)
         ) {
             Box(
                 modifier = Modifier
                     .fillMaxSize()
                     .background(Color.Black)
-                    .clickable { viewingPhoto = null },
+                    .clickable { closePhotoViewer() },
                 contentAlignment = Alignment.Center
             ) {
                 AsyncImage(
@@ -670,12 +681,40 @@ fun ChatScreen(
                     contentScale = ContentScale.Fit
                 )
                 IconButton(
-                    onClick = { viewingPhoto = null },
+                    onClick = { closePhotoViewer() },
                     modifier = Modifier
                         .align(Alignment.TopEnd)
                         .padding(16.dp)
                 ) {
                     Icon(Icons.Default.Close, contentDescription = "Close", tint = Color.White)
+                }
+                // Keep: the photo stays in the chat instead of being
+                // deleted when the viewer closes. Recipient only, and
+                // only while the message is not kept yet. "Keep" means
+                // keep in the chat — it does not save a copy to the device.
+                if (viewing.viewOnce && !viewing.kept && viewing.senderId != myId) {
+                    TextButton(
+                        onClick = {
+                            viewModel.keepMessage(viewing)
+                            viewingPhoto = viewing.copy(kept = true)
+                        },
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 32.dp)
+                            .clip(RoundedCornerShape(999.dp))
+                            .background(Color.White.copy(alpha = 0.18f))
+                    ) {
+                        Text("Keep", color = Color.White)
+                    }
+                } else if (viewing.viewOnce && viewing.kept) {
+                    Text(
+                        "Kept in chat",
+                        color = Color.White.copy(alpha = 0.8f),
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier
+                            .align(Alignment.BottomCenter)
+                            .padding(bottom = 40.dp)
+                    )
                 }
             }
         }
@@ -752,6 +791,7 @@ private fun MessageBubble(
     onReactionChipClick: (String) -> Unit,
     onPhotoClick: (ChatMessage) -> Unit,
     onVoiceClick: (ChatMessage) -> Unit,
+    onKeepClick: (ChatMessage) -> Unit,
     playing: Boolean,
     voiceDurationSec: Int?
 ) {
@@ -761,6 +801,14 @@ private fun MessageBubble(
         RoundedCornerShape(topStart = 16.dp, topEnd = 2.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
     } else {
         RoundedCornerShape(topStart = 2.dp, topEnd = 16.dp, bottomStart = 16.dp, bottomEnd = 16.dp)
+    }
+    // A photo fills its bubble edge-to-edge, so only the bubble's own
+    // top corners show on the image (its bottom corners stay square —
+    // the time/ticks row sits below it, inside the same bubble).
+    val photoImageShape = if (mine) {
+        RoundedCornerShape(topStart = 16.dp, topEnd = 2.dp)
+    } else {
+        RoundedCornerShape(topStart = 2.dp, topEnd = 16.dp)
     }
     val timeText = TimeFormat.fmtTime(message.createdAt)
     Column(
@@ -785,7 +833,15 @@ private fun MessageBubble(
                         onClick = { if (message.kind == "photo") onPhotoClick(message) },
                         onLongClick = onLongPress
                     )
-                    .padding(start = 12.dp, end = 8.dp, top = 6.dp, bottom = 6.dp)
+                    // A photo bubble wraps its image tightly — no padding
+                    // around the image, WhatsApp-style. Text and voice
+                    // bubbles keep their usual inner padding.
+                    .padding(
+                        start = if (message.kind == "photo") 0.dp else 12.dp,
+                        end = if (message.kind == "photo") 0.dp else 8.dp,
+                        top = if (message.kind == "photo") 0.dp else 6.dp,
+                        bottom = if (message.kind == "photo") 0.dp else 6.dp
+                    )
             ) {
                 Column {
                     if (replyTo != null) {
@@ -816,18 +872,25 @@ private fun MessageBubble(
                                     modifier = Modifier
                                         .widthIn(max = 240.dp)
                                         .height(180.dp)
-                                        .clip(RoundedCornerShape(12.dp)),
+                                        .clip(photoImageShape),
                                     contentScale = ContentScale.Crop
                                 )
                             } else {
                                 Text(
                                     text = "Photo",
                                     style = MaterialTheme.typography.bodyMedium,
-                                    color = if (mine) colors.bubbleMeText else colors.text
+                                    color = if (mine) colors.bubbleMeText else colors.text,
+                                    modifier = Modifier.padding(start = 12.dp, end = 8.dp, top = 6.dp)
                                 )
                             }
-                            Spacer(Modifier.height(4.dp))
-                            MetaRow(timeText = timeText, tickState = tickState, mine = mine)
+                            // The time/ticks row keeps its place below the
+                            // photo, unchanged — only its padding is local
+                            // now that the bubble itself has no padding.
+                            Box(
+                                modifier = Modifier.padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 6.dp)
+                            ) {
+                                MetaRow(timeText = timeText, tickState = tickState, mine = mine)
+                            }
                         }
                         "voice" -> {
                             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -861,6 +924,31 @@ private fun MessageBubble(
                                 if (mine && tickState != null) {
                                     Spacer(Modifier.width(2.dp))
                                     TickIcon(state = tickState, onBubble = true)
+                                }
+                            }
+                            // Keep: the recipient can keep this view-once
+                            // voice message in the chat instead of it being
+                            // deleted after a full listen. Recipient only,
+                            // and only while it is not kept yet. "Keep"
+                            // means keep in the chat — it does not save a
+                            // copy to the device. A kept message renders
+                            // as a normal voice message (this row just
+                            // disappears).
+                            if (message.viewOnce && !message.kept && !mine) {
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.End
+                                ) {
+                                    TextButton(
+                                        onClick = { onKeepClick(message) },
+                                        contentPadding = PaddingValues(horizontal = 4.dp, vertical = 0.dp)
+                                    ) {
+                                        Text(
+                                            "Keep",
+                                            style = MaterialTheme.typography.bodySmall,
+                                            color = Emerald
+                                        )
+                                    }
                                 }
                             }
                         }
