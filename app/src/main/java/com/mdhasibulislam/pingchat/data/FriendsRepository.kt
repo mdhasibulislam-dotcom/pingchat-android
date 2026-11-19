@@ -27,8 +27,21 @@ import kotlinx.serialization.json.put
  */
 class FriendsRepository {
     private val client get() = Supabase.client
+    private val privacyRepo = PrivacyRepository()
 
     fun myId(): String? = client.auth.currentUserOrNull()?.id
+
+    /**
+     * May I message [userId] under their Messages setting
+     * (Everybody / Friends)? ChatViewModel / worker E gate on this
+     * before opening a chat or sending. Blocks count as "no".
+     */
+    suspend fun canMessageUser(userId: String): Boolean =
+        try {
+            privacyRepo.canMessageUser(userId)
+        } catch (e: Exception) {
+            true
+        }
 
     /** All users, for the People directory (avatar + name + username). */
     suspend fun loadAllUsers(): List<Profile> {
@@ -55,6 +68,12 @@ class FriendsRepository {
     }
 
     suspend fun sendFriendRequest(userId: String) {
+        // v3.1.0 Privacy: no friend request to someone I blocked, or
+        // from someone who blocked me — the server-side
+        // pingchat_send_friend_request RPC does not check blocks.
+        if (privacyRepo.isBlockedByMe(userId) || privacyRepo.amBlockedBy(userId)) {
+            throw IllegalStateException("You cannot send a friend request to this person.")
+        }
         client.postgrest.rpc(
             "pingchat_send_friend_request",
             buildJsonObject { put("p_user_id", userId) }
@@ -110,10 +129,19 @@ class FriendsRepository {
                 order("created_at", Order.DESCENDING)
             }.decodeList<Friendship>()
             if (rows.isEmpty()) return emptyList()
+            // v3.1.0 Privacy: requests from people I blocked stay
+            // hidden — blocking someone must silence them everywhere.
+            val blockedIds = try {
+                privacyRepo.loadBlockedUserIds().toSet()
+            } catch (e: Exception) {
+                emptySet()
+            }
+            val visible = rows.filter { it.requesterId !in blockedIds }
+            if (visible.isEmpty()) return emptyList()
             val profiles = client.from("pingchat_profiles").select {
-                filter { isIn("id", rows.map { it.requesterId }) }
+                filter { isIn("id", visible.map { it.requesterId }) }
             }.decodeList<Profile>().associateBy { it.id }
-            rows.mapNotNull { row ->
+            visible.mapNotNull { row ->
                 val profile = profiles[row.requesterId] ?: return@mapNotNull null
                 row to profile
             }

@@ -54,6 +54,7 @@ import java.util.UUID
  */
 object CallManager {
     private val repo = CallRepository()
+    private val privacyRepo = PrivacyRepository()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     private val _incoming = MutableStateFlow<IncomingCall?>(null)
@@ -188,6 +189,15 @@ object CallManager {
     suspend fun startCall(peer: Profile, kind: String, conversationId: String): String? {
         val me = myId ?: return "You are not signed in."
         if (_session.value != null || _incoming.value != null) return "You are already in a call."
+        // v3.1.0 Privacy — the CALLEE's Calls setting decides who may
+        // call them (Everybody / Friends / Nobody); blocked either way
+        // is also refused here, before any WebRTC setup or ringing.
+        val allowed = try {
+            privacyRepo.canCallUser(peer.id)
+        } catch (e: Exception) {
+            true // on a check failure, do not block the call
+        }
+        if (!allowed) return "This person does not accept calls from you."
         val context = appContext ?: return "Call setup is not ready yet."
         val callId = UUID.randomUUID().toString()
         ensureFactory(context)
@@ -300,6 +310,20 @@ object CallManager {
                     direction = "incoming", status = "missed",
                     startedAtMillis = null, durationSec = null
                 )
+                return@launch
+            }
+            // v3.1.0 Privacy — MY Calls setting decides who may ring me
+            // (Everybody / Friends / Nobody; blocked callers too). A
+            // refused call is declined silently for the caller, never
+            // rings here, and leaves no history row on my side.
+            val allowed = try {
+                privacyRepo.canReceiveCallFrom(payload.from.id)
+            } catch (e: Exception) {
+                true // on a check failure, let the call ring
+            }
+            if (!allowed) {
+                repo.sendCallEnd(payload.callId, "declined")
+                repo.markDeclined(payload.callId)
                 return@launch
             }
             val peerProfile = repo.loadProfile(payload.from.id)

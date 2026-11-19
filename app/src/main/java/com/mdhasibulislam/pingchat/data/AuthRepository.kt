@@ -109,6 +109,22 @@ class AuthRepository {
         }
     }
 
+    /** Current sign-in email (Supabase Auth), shown in Privacy & Security. */
+    fun currentLoginEmail(): String? = auth.currentUserOrNull()?.email
+
+    /**
+     * Change the sign-in email (v3.1.0 Privacy: Login Email).
+     * Supabase sends a confirmation to the NEW address when email
+     * confirmation is on; with confirmation OFF in this project the
+     * change applies at once. Throws on an invalid or already
+     * registered address — callers show friendlyError(e).
+     */
+    suspend fun updateLoginEmail(newEmail: String) {
+        auth.updateUser {
+            email = newEmail.trim()
+        }
+    }
+
     suspend fun signOut() {
         val uid = auth.currentUserOrNull()?.id
         try {

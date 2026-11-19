@@ -54,9 +54,16 @@ class PingChatMessagingService : FirebaseMessagingService() {
         // handles incoming calls, not this toggle.
         if (!Prefs(applicationContext).notificationsEnabled) return
         val data = message.data
+        // v3.1.0: muted chats send no notification. The muted ids are
+        // cached in Prefs (see Prefs.mutedConversationIds) because this
+        // service has no signed-in Supabase session to query with.
+        // Muting never affects calls — those are handled by CallManager.
+        val conversationId = data["conversationId"]
+        if (conversationId != null &&
+            Prefs(applicationContext).mutedConversationIds.contains(conversationId)
+        ) return
         val title = data["title"] ?: message.notification?.title ?: return
         val body = data["body"] ?: message.notification?.body ?: ""
-        val conversationId = data["conversationId"]
         val senderId = data["senderId"]
         val type = data["type"] ?: "message"
         showNotification(title, body, conversationId, senderId, type)

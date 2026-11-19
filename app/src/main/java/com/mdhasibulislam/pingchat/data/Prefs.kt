@@ -28,4 +28,21 @@ class Prefs(context: Context) {
     var notificationsEnabled: Boolean
         get() = sp.getBoolean("notifications_enabled", true)
         set(value) { sp.edit().putBoolean("notifications_enabled", value).apply() }
+
+    /**
+     * Muted conversation ids, v3.1.0 (local mirror of the is_muted flag on
+     * the caller's participant row). PingChatMessagingService reads this
+     * — not the database — because the service runs outside any signed-in
+     * Supabase session and must decide synchronously whether to show a
+     * push. ChatsViewModel keeps this in sync whenever mute changes.
+     */
+    var mutedConversationIds: Set<String>
+        get() = sp.getStringSet("muted_conversations", emptySet()) ?: emptySet()
+        set(value) { sp.edit().putStringSet("muted_conversations", value).apply() }
+
+    fun setConversationMuted(conversationId: String, muted: Boolean) {
+        val current = mutedConversationIds.toMutableSet()
+        if (muted) current.add(conversationId) else current.remove(conversationId)
+        mutedConversationIds = current
+    }
 }

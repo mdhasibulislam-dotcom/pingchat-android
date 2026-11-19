@@ -38,6 +38,7 @@ object SessionManager {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val authRepo = AuthRepository()
     private val chatRepo = ChatRepository()
+    private val privacyRepo = PrivacyRepository()
 
     private val _user = MutableStateFlow<SessionUser?>(null)
     val user: StateFlow<SessionUser?> = _user.asStateFlow()
@@ -54,6 +55,46 @@ object SessionManager {
 
     private val _onlineIds = MutableStateFlow<Set<String>>(emptySet())
     val onlineIds: StateFlow<Set<String>> = _onlineIds.asStateFlow()
+
+    /**
+     * v3.1.0 Privacy — per-peer presence visibility cache: peer id ->
+     * whether *I* may see their online state / last seen, under THEIR
+     * "Last Seen & Online" setting (PrivacyRepository.canSeeLastSeen).
+     * Uncached peers default to VISIBLE (the v3.0.2 behaviour) until
+     * [refreshPresenceVisibility] loads their setting — presence must
+     * never disappear just because the check has not run yet.
+     * Screens that show an online dot / last-seen line should call
+     * refreshPresenceVisibility(peerId) when they open, and read
+     * [isPresenceVisibleCached] (or the suspend [isPresenceVisible]).
+     * "Nobody" hides the Online line too — callers show "Offline" then.
+     */
+    private val _presenceVisibility = MutableStateFlow<Map<String, Boolean>>(emptyMap())
+    val presenceVisibility: StateFlow<Map<String, Boolean>> = _presenceVisibility.asStateFlow()
+
+    /** Cached answer for [peerId], or true when not loaded yet. */
+    fun isPresenceVisibleCached(peerId: String): Boolean =
+        _presenceVisibility.value[peerId] ?: true
+
+    /** Load (and cache) whether I may see [peerId]'s presence. */
+    suspend fun isPresenceVisible(peerId: String): Boolean {
+        val visible = try {
+            privacyRepo.canSeeLastSeen(peerId)
+        } catch (e: Exception) {
+            true
+        }
+        _presenceVisibility.update { it + (peerId to visible) }
+        return visible
+    }
+
+    /** Refresh one peer's cached presence visibility (best-effort). */
+    fun refreshPresenceVisibility(peerId: String) {
+        scope.launch {
+            try {
+                isPresenceVisible(peerId)
+            } catch (e: Exception) {
+            }
+        }
+    }
 
     /** Emitted whenever any of my conversations changes (new message, etc.). */
     private val _feedTick = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
@@ -123,6 +164,26 @@ object SessionManager {
             null
         }
         _profile.value = profile
+        // v3.1.0 Privacy — record this device, and honour a remote
+        // logout: if another device of mine revoked this one, sign out
+        // here instead of un-revoking it (registerCurrentDevice
+        // returns false exactly then). The sign-out flips
+        // isLoggedIn to false, which routes back to the login screen.
+        val deviceOk = try {
+            privacyRepo.registerCurrentDevice(appContext)
+        } catch (e: Exception) {
+            true
+        }
+        if (!deviceOk) {
+            // Do NOT clear _user/_profile here: onSignedOut() (driven
+            // by the sign-out below) needs them set to run its cleanup
+            // and flip isLoggedIn to false.
+            try {
+                authRepo.signOut()
+            } catch (e: Exception) {
+            }
+            return
+        }
         setOnline(user.id, true)
         saveFcmToken(user.id)
         startPresenceObserver(user.id)
@@ -183,6 +244,22 @@ object SessionManager {
         val observer = object : DefaultLifecycleObserver {
             override fun onStart(owner: LifecycleOwner) {
                 scope.launch {
+                    // v3.1.0 Privacy — remote logout: if another device
+                    // of mine revoked this one, sign out now (the check
+                    // also runs on sign-in, this covers a revoke that
+                    // arrived while the app was backgrounded).
+                    val revoked = try {
+                        privacyRepo.isCurrentDeviceRevoked(appContext)
+                    } catch (e: Exception) {
+                        false
+                    }
+                    if (revoked) {
+                        try {
+                            authRepo.signOut()
+                        } catch (e: Exception) {
+                        }
+                        return@launch
+                    }
                     setOnline(uid, true)
                     // The socket may have dropped while the app was
                     // backgrounded: re-announce my presence so peers see me

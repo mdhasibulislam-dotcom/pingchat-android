@@ -38,7 +38,10 @@ import kotlinx.serialization.json.put
  *   last_message_id, last_sender_id (denormalized preview, refreshed on send)
  * - pingchat_conversation_participants: conversation_id, user_id, last_read_at
  * - pingchat_messages: sender_id, body, kind (text/voice/photo), reply_to_id,
- *   media_url, media_path, view_once, kept, consumed_at, deleted_by [uuid]
+ *   media_url, media_path, deleted_by [uuid]
+ *   (v3.1.0: photo/voice stay in the chat like normal messages; the
+ *   server deletes them 7 days after they were sent — see
+ *   database/migration-v310-media-expiry.sql. No view-once, no Keep.)
  * - pingchat_message_reactions: message_id, user_id, emoji (one row per user)
  * - Typing + presence are Realtime Broadcast / Presence — no tables.
  *
@@ -52,7 +55,15 @@ class ChatRepository {
 
     fun myId(): String? = client.auth.currentUserOrNull()?.id
 
-    /** Load all 1-to-1 conversations for the signed-in user, newest first. */
+    /**
+     * Load all conversations for the signed-in user — 1-to-1 AND groups —
+     * with the caller's own pin/mute/archive flags.
+     * Sort: pinned chats first, then newest message first (v3.1.0).
+     * Archived chats are INCLUDED (flagged) — the ViewModel splits them
+     * into the Archived section; a new message never unarchives.
+     * Unread counting is unchanged (v3.0.2): peer messages newer than my
+     * last_read_at — for groups, any member's message counts.
+     */
     suspend fun loadConversations(): List<ConversationItem> {
         val me = myId() ?: return emptyList()
 
@@ -63,6 +74,7 @@ class ChatRepository {
 
         val convIds = myParts.map { it.conversationId }
         val myRead = myParts.associate { it.conversationId to it.lastReadAt }
+        val myFlags = myParts.associateBy { it.conversationId }
 
         val convs = client.from("pingchat_conversations").select {
             filter { isIn("id", convIds) }
@@ -76,19 +88,17 @@ class ChatRepository {
             }
         }.decodeList<Participant>()
         val peerIds = others.map { it.userId }.distinct()
-        if (peerIds.isEmpty()) return emptyList()
-
-        val peerProfiles = client.from("pingchat_profiles").select {
-            filter { isIn("id", peerIds) }
-        }.decodeList<Profile>().associateBy { it.id }
+        val peerProfiles = if (peerIds.isEmpty()) {
+            emptyMap()
+        } else {
+            client.from("pingchat_profiles").select {
+                filter { isIn("id", peerIds) }
+            }.decodeList<Profile>().associateBy { it.id }
+        }
         val peerRead = others.associate { it.conversationId to it.lastReadAt }
 
         return convs.mapNotNull { conv ->
-            val peerPart = others.firstOrNull { it.conversationId == conv.id }
-                ?: return@mapNotNull null
-            val peer = peerProfiles[peerPart.userId] ?: return@mapNotNull null
-            // The last-message preview comes from the denormalized fields
-            // on the conversation row itself — no messages query.
+            val myPart = myFlags[conv.id] ?: return@mapNotNull null
             val last = if (conv.lastMessageId.isNullOrBlank()) {
                 null
             } else {
@@ -102,9 +112,190 @@ class ChatRepository {
                 )
             }
             val unread = unreadCount(conv.id, myRead[conv.id])
-            ConversationItem(conv, peer, last, myRead[conv.id], peerRead[conv.id], unread)
+            if (conv.isGroup) {
+                // Group: no single peer — carry every member's profile so
+                // the list can show the group name + member names.
+                val members = others.filter { it.conversationId == conv.id }
+                    .mapNotNull { peerProfiles[it.userId] }
+                ConversationItem(
+                    conversation = conv,
+                    peer = null,
+                    lastMessage = last,
+                    myLastReadAt = myRead[conv.id],
+                    peerLastReadAt = peerRead[conv.id],
+                    unreadCount = unread,
+                    memberProfiles = members,
+                    isPinned = myPart.isPinned,
+                    isMuted = myPart.isMuted,
+                    isArchived = myPart.isArchived
+                )
+            } else {
+                val peerPart = others.firstOrNull { it.conversationId == conv.id }
+                    ?: return@mapNotNull null
+                val peer = peerProfiles[peerPart.userId] ?: return@mapNotNull null
+                ConversationItem(
+                    conversation = conv,
+                    peer = peer,
+                    lastMessage = last,
+                    myLastReadAt = myRead[conv.id],
+                    peerLastReadAt = peerRead[conv.id],
+                    unreadCount = unread,
+                    isPinned = myPart.isPinned,
+                    isMuted = myPart.isMuted,
+                    isArchived = myPart.isArchived
+                )
+            }
+        }.sortedWith(
+            // Pinned first (then newest first, as loaded). Archived chats
+            // keep their relative order inside the archived section.
+            compareByDescending<ConversationItem> { it.isPinned }
+                .thenByDescending { it.conversation.lastMessageAt ?: "" }
+        )
+    }
+
+    /** Load one conversation row (group info for the chat header). */
+    suspend fun loadConversation(conversationId: String): Conversation? {
+        return try {
+            client.from("pingchat_conversations").select {
+                filter { eq("id", conversationId) }
+            }.decodeSingleOrNull<Conversation>()
+        } catch (e: Exception) {
+            null
         }
     }
+
+    /** All member profiles of a conversation (sender names in group bubbles). */
+    suspend fun loadMemberProfiles(conversationId: String): List<Profile> {
+        return try {
+            val parts = client.from("pingchat_conversation_participants").select {
+                filter { eq("conversation_id", conversationId) }
+            }.decodeList<Participant>()
+            if (parts.isEmpty()) return emptyList()
+            client.from("pingchat_profiles").select {
+                filter { isIn("id", parts.map { it.userId }) }
+            }.decodeList<Profile>()
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /** The pinned message of a conversation, if any (banner above the chat). */
+    suspend fun loadPinnedMessage(conversationId: String): ChatMessage? {
+        return try {
+            client.from("pingchat_messages").select {
+                filter {
+                    eq("conversation_id", conversationId)
+                    eq("is_pinned", true)
+                }
+            }.decodeSingleOrNull<ChatMessage>()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    // ---------- v3.1.0 chat features: edit / forward / pin ----------
+
+    /** Edit my own text message (RPC: sender-only, text-only). */
+    suspend fun editMessage(messageId: String, newBody: String): Boolean {
+        return try {
+            client.postgrest.rpc(
+                "pingchat_edit_message",
+                buildJsonObject {
+                    put("p_message_id", messageId)
+                    put("p_body", newBody.trim())
+                }
+            ).decodeAs<Boolean>()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Forward a message into another conversation I belong to (RPC copies
+     * the row with forwarded_from = original sender). Returns the new
+     * message id, or null when it failed (e.g. view-once, not a member,
+     * blocked). The caller checks PrivacyRepository.canForwardMessage
+     * first — the RPC cannot know the original sender's forward setting.
+     */
+    suspend fun forwardMessage(messageId: String, targetConversationId: String): String? {
+        return try {
+            client.postgrest.rpc(
+                "pingchat_forward_message",
+                buildJsonObject {
+                    put("p_message_id", messageId)
+                    put("p_target_conversation_id", targetConversationId)
+                }
+            ).decodeAs<String?>()
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /** Pin or unpin a message (RPC: any participant; one pinned per chat). */
+    suspend fun setMessagePinned(messageId: String, pin: Boolean): Boolean {
+        return try {
+            client.postgrest.rpc(
+                "pingchat_set_message_pinned",
+                buildJsonObject {
+                    put("p_message_id", messageId)
+                    put("p_pin", pin)
+                }
+            ).decodeAs<Boolean>()
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    // ---------- v3.1.0 per-chat flags: pin / mute / archive ----------
+    // These update the caller's OWN participant row — the v3 update-self
+    // RLS policy already allows exactly that, so no new policy is needed.
+    // A new message NEVER clears is_archived (only the user unarchives).
+
+    private suspend fun setMyParticipantFlag(
+        conversationId: String,
+        flag: String,
+        value: Boolean
+    ): Boolean {
+        val me = myId() ?: return false
+        return try {
+            client.from("pingchat_conversation_participants").update(
+                {
+                    set(flag, value)
+                    set(
+                        when (flag) {
+                            "is_pinned" -> "pinned_at"
+                            "is_muted" -> "muted_at"
+                            else -> "archived_at"
+                        },
+                        if (value) Instant.now().toString() else null as String?
+                    )
+                }
+            ) {
+                filter {
+                    eq("conversation_id", conversationId)
+                    eq("user_id", me)
+                }
+            }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /** Pin this chat to the top of the list (or unpin it). */
+    suspend fun setChatPinned(conversationId: String, pinned: Boolean): Boolean =
+        setMyParticipantFlag(conversationId, "is_pinned", pinned)
+
+    /** Mute this chat: its push notifications are suppressed on-device
+     *  (PingChatMessagingService checks the muted ids in Prefs) and the
+     *  list shows it muted. Calls are NOT muted. */
+    suspend fun setChatMuted(conversationId: String, muted: Boolean): Boolean =
+        setMyParticipantFlag(conversationId, "is_muted", muted)
+
+    /** Archive this chat: hidden from the list, shown under Archived.
+     *  New messages do NOT unarchive it — only the user does. */
+    suspend fun setChatArchived(conversationId: String, archived: Boolean): Boolean =
+        setMyParticipantFlag(conversationId, "is_archived", archived)
 
     private suspend fun unreadCount(conversationId: String, myLastReadAt: String?): Int {
         val me = myId() ?: return 0
@@ -229,9 +420,11 @@ class ChatRepository {
     }
 
     /**
-     * Send a view-once photo: upload to the public 'chat-photos' bucket at
+     * Send a photo: upload to the public 'chat-photos' bucket at
      * <userId>/<uuid>.<ext>, then insert a kind='photo' message.
-     * Supabase Storage is free — no Blaze needed.
+     * Supabase Storage is free — no Blaze needed. The photo stays in
+     * the chat like a normal message; the server deletes it 7 days
+     * after it was sent (migration-v310-media-expiry.sql).
      */
     suspend fun sendPhoto(conversationId: String, bytes: ByteArray, mime: String): ChatMessage? {
         val me = myId() ?: return null
@@ -253,7 +446,7 @@ class ChatRepository {
         }
     }
 
-    /** Send a view-once voice message: upload the .m4a bytes, then insert. */
+    /** Send a voice message: upload the .m4a bytes, then insert. */
     suspend fun sendVoice(conversationId: String, bytes: ByteArray): ChatMessage? {
         val me = myId() ?: return null
         return try {
@@ -284,7 +477,6 @@ class ChatRepository {
                     put("kind", kind)
                     put("media_url", url)
                     put("media_path", path)
-                    put("view_once", true)
                 }
             ) { select() }.decodeSingleOrNull<ChatMessage>()
             if (sent != null) {
@@ -324,45 +516,7 @@ class ChatRepository {
         }
     }
 
-    /**
-     * View-once consume: deletes a view-once voice/photo message, but only
-     * when the caller is the recipient (the RPC refuses the sender or an
-     * already-consumed message). Returns true when the row was deleted.
-     */
-    suspend fun consumeMessage(conversationId: String, messageId: String): Boolean {
-        return try {
-            client.postgrest.rpc(
-                "pingchat_consume_voice_message",
-                buildJsonObject { put("p_message_id", messageId) }
-            ).decodeAs<Boolean>()
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    /**
-     * Keep a view-once message in the chat: sets kept = true on the row
-     * (PostgREST update). The migration-message-kept.sql RLS policy only
-     * lets the RECIPIENT of a view-once message do this, and the consume
-     * RPC refuses kept rows, so a kept message is never deleted.
-     * Returns true only when the row came back with kept = true.
-     * "Keep" means keep in the chat — it does NOT save a copy to the device.
-     */
-    suspend fun keepMessage(messageId: String): Boolean {
-        return try {
-            val updated = client.from("pingchat_messages").update(
-                { set("kept", true) }
-            ) {
-                filter { eq("id", messageId) }
-                select()
-            }.decodeSingleOrNull<ChatMessage>()
-            updated?.kept == true
-        } catch (e: Exception) {
-            false
-        }
-    }
-
-    /** Best-effort removal of a consumed/deleted media file from Storage.
+    /** Best-effort removal of a deleted media file from Storage.
      * [bucket] is the top folder ("chat-photos" / "voice-messages"). */
     suspend fun deleteMedia(bucket: String, path: String) {
         try {
