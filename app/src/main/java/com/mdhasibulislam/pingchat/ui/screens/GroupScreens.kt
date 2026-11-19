@@ -79,7 +79,10 @@ import kotlinx.coroutines.launch
 @Composable
 fun CreateGroupScreen(
     onGroupCreated: (String) -> Unit,
-    onDismiss: () -> Unit
+    onDismiss: () -> Unit,
+    // v3.1.1: pre-select members (e.g. "Create a group with <peer>" from
+    // a chat's contact info) — defaults to none, existing callers unaffected.
+    initialSelectedIds: Set<String> = emptySet()
 ) {
     val colors = pingChatColors
     val context = LocalContext.current
@@ -89,7 +92,7 @@ fun CreateGroupScreen(
 
     var name by remember { mutableStateOf("") }
     var friends by remember { mutableStateOf<List<Profile>>(emptyList()) }
-    var selected by remember { mutableStateOf<Set<String>>(emptySet()) }
+    var selected by remember { mutableStateOf<Set<String>>(initialSelectedIds) }
     var photoBytes by remember { mutableStateOf<ByteArray?>(null) }
     var photoMime by remember { mutableStateOf("image/jpeg") }
     var photoUri by remember { mutableStateOf<String?>(null) }

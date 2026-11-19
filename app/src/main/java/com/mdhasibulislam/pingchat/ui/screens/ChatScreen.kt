@@ -97,7 +97,10 @@ import com.mdhasibulislam.pingchat.data.ChatMessage
 import com.mdhasibulislam.pingchat.data.ChatRepository
 import com.mdhasibulislam.pingchat.data.ConversationItem
 import com.mdhasibulislam.pingchat.data.FriendState
+import com.mdhasibulislam.pingchat.data.FriendsRepository
 import com.mdhasibulislam.pingchat.data.Profile
+import com.mdhasibulislam.pingchat.data.Prefs
+import com.mdhasibulislam.pingchat.data.ProfileRepository
 import com.mdhasibulislam.pingchat.data.PushSender
 import com.mdhasibulislam.pingchat.data.Reaction
 import com.mdhasibulislam.pingchat.data.SessionManager
@@ -161,7 +164,15 @@ private val ReactionEmojis = listOf("❤️", "😂", "😮", "😢", "😡", "�
 @Composable
 fun ChatScreen(
     conversationId: String,
-    onBack: () -> Unit
+    onBack: () -> Unit,
+    /**
+     * v3.1.1: open another chat — a group just created from the peer's
+     * profile, or "Message" on a nested profile opened from inside it.
+     * Defaults to a no-op; MainActivity must wire it to
+     * navController.navigate("chat/$id") (the same lambda MainScreen
+     * already gets as onOpenChat).
+     */
+    onOpenChat: (String) -> Unit = {}
 ) {
     val factory = remember(conversationId) { ChatViewModelFactory(conversationId) }
     val viewModel: ChatViewModel = viewModel(factory = factory)
@@ -217,6 +228,95 @@ fun ChatScreen(
     var forwardMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var showGroupSettings by remember { mutableStateOf(false) }
 
+    // v3.1.1: full public profile opened from the chat header (1-to-1
+    // only) — the same PublicProfileScreen the People tab opens.
+    // ChatScreen is a separate NavHost destination from MainScreen, so
+    // MainScreen's publicProfile state can't be reached from here; the
+    // screen is rendered as a fullscreen overlay instead (same pattern
+    // as the group-settings overlay below), and its data is loaded from
+    // the same repos PeopleViewModel uses (ProfileRepository for mutual
+    // friends / view count, PrivacyRepository for bio + last-seen
+    // visibility, FriendsRepository for the friendship state).
+    val profileRepo = remember { ProfileRepository() }
+    val friendsRepo = remember { FriendsRepository() }
+    val prefs = remember { Prefs(context) }
+    var publicProfile by remember { mutableStateOf<Profile?>(null) }
+    var publicProfileState by remember { mutableStateOf(FriendState.FRIENDS) }
+    var profileMutualFriends by remember { mutableStateOf<List<Profile>>(emptyList()) }
+    var profileViewCount by remember { mutableStateOf(0L) }
+    var profileVisibility by remember { mutableStateOf<Pair<Boolean, Boolean>?>(null) }
+    var peerBlocked by remember { mutableStateOf(false) }
+    var chatMuted by remember { mutableStateOf(false) }
+    var showCreateGroup by remember { mutableStateOf(false) }
+    var confirmBlock by remember { mutableStateOf(false) }
+
+    /**
+     * Load everything PublicProfileScreen needs for [profile], mirroring
+     * MainScreen's LaunchedEffect(publicProfile): mutual friends + view
+     * count + view recording (ProfileRepository), friendship state
+     * (FriendsRepository — the chat peer is always FRIENDS), and the
+     * privacy-checked bio / last-seen visibility (PrivacyRepository,
+     * falling back to PeopleScreen.canSeeDetails, like
+     * PeopleViewModel.visibilityFor does). Also loads this chat's mute
+     * flag and whether I blocked the peer, for the actions footer.
+     */
+    suspend fun loadPublicProfileState(profile: Profile) {
+        val state = if (profile.id == peer?.id) FriendState.FRIENDS
+        else try {
+            friendsRepo.friendshipStatus(profile.id)
+        } catch (_: Exception) {
+            FriendState.NONE
+        }
+        publicProfileState = state
+        // Fallback first so the screen never waits on the network.
+        val fallback = canSeeDetails(profile, state)
+        profileVisibility = fallback to fallback
+        profileMutualFriends = try {
+            profileRepo.loadMutualFriends(profile.id)
+        } catch (_: Exception) {
+            emptyList()
+        }
+        profileViewCount = try {
+            profileRepo.profileViewCount(profile.id)
+        } catch (_: Exception) {
+            0L
+        }
+        try {
+            profileRepo.recordProfileView(profile.id)
+            profileViewCount = profileRepo.profileViewCount(profile.id)
+        } catch (_: Exception) {
+            // views are best-effort
+        }
+        profileVisibility = try {
+            privacyRepo.canSeeBioOf(profile.id) to privacyRepo.canSeeLastSeen(profile.id)
+        } catch (_: Exception) {
+            fallback to fallback
+        }
+        peerBlocked = try {
+            privacyRepo.isBlockedByMe(profile.id)
+        } catch (_: Exception) {
+            false
+        }
+        chatMuted = profile.id == peer?.id &&
+            prefs.mutedConversationIds.contains(conversationId)
+    }
+
+    /** Open the full public profile for [profile] (header tap / ⋮ menu). */
+    fun openPublicProfile(profile: Profile) {
+        profileMutualFriends = emptyList()
+        profileViewCount = 0L
+        profileVisibility = null
+        peerBlocked = false
+        publicProfileState = if (profile.id == peer?.id) FriendState.FRIENDS else FriendState.NONE
+        publicProfile = profile
+    }
+
+    // (Re)load the profile data whenever a different profile opens.
+    LaunchedEffect(publicProfile?.id) {
+        val profile = publicProfile ?: return@LaunchedEffect
+        loadPublicProfileState(profile)
+    }
+
     // Gallery picker (photo only — no video, no camera in this version).
     val photoPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -234,7 +334,15 @@ fun ChatScreen(
     // the old ViewModel recorder had no cancel path).
     val micPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
         if (granted) {
-            voiceRecorder.start(File(context.cacheDir, "voice_${System.currentTimeMillis()}.m4a"))
+            // v3.1.1: do NOT auto-start a recording here — no finger is
+            // on the mic anymore, so no gesture owns it (it would record
+            // unlocked, with no way to finish it except bar buttons the
+            // user never saw appear). The user holds the mic again.
+            Toast.makeText(
+                context,
+                "Microphone allowed — hold the mic to record.",
+                Toast.LENGTH_SHORT
+            ).show()
         } else {
             Toast.makeText(
                 context,
@@ -245,6 +353,11 @@ fun ChatScreen(
     }
     /** Returns true when recording actually started. */
     fun requestMicAndRecord(): Boolean {
+        // v3.1.1: the mic button stays mounted while recording (fix 1
+        // below), so a tap during a recording must not start a second
+        // one — and must not toast either. Returning false tells the
+        // button's gesture loop this press owns nothing.
+        if (voiceRecorder.isRecording.value) return false
         if (!voiceAllowed) {
             Toast.makeText(context, "Voice messages are not allowed in this chat.", Toast.LENGTH_SHORT).show()
             return false
@@ -267,16 +380,37 @@ fun ChatScreen(
     val callViewModel: CallViewModel = viewModel()
     val scope = rememberCoroutineScope()
     var pendingCallKind by remember { mutableStateOf<String?>(null) }
+    // v3.1.1: a call started from a nested profile (a mutual friend opened
+    // from inside the peer's profile) — the peer to call, instead of the
+    // chat peer. Null means "call the chat peer" (existing behaviour).
+    var pendingCallProfile by remember { mutableStateOf<Profile?>(null) }
     val callPermission = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestMultiplePermissions()
     ) { result ->
         val kind = pendingCallKind
         pendingCallKind = null
-        val p = viewModel.peer.value
+        // v3.1.1: a nested profile's call carries its own peer (and needs
+        // its own 1-to-1 conversation); otherwise call the chat peer.
+        val nested = pendingCallProfile
+        pendingCallProfile = null
+        val p = nested ?: viewModel.peer.value
         if (kind == null || p == null) return@rememberLauncherForActivityResult
         if (result.values.all { it }) {
             scope.launch {
-                val err = callViewModel.startCall(p, kind, conversationId)
+                val cid = if (nested != null) {
+                    try {
+                        chatRepo.getOrCreateConversation(nested.id)
+                    } catch (_: Exception) {
+                        null
+                    }
+                } else {
+                    conversationId
+                }
+                if (cid == null) {
+                    Toast.makeText(context, "Could not start the call. Try again.", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                val err = callViewModel.startCall(p, kind, cid)
                 if (err != null) Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
             }
         } else {
@@ -311,6 +445,47 @@ fun ChatScreen(
             }
         } else {
             pendingCallKind = kind
+            callPermission.launch(needed)
+        }
+    }
+
+    /**
+     * v3.1.1: audio/video call from a public profile opened from this
+     * chat. The chat peer reuses requestCall; any other profile (a
+     * mutual friend opened from inside the peer's profile) gets its own
+     * 1-to-1 conversation first — the same path as
+     * PeopleViewModel.startCall, minus the PeopleViewModel.
+     */
+    fun requestProfileCall(profile: Profile, kind: String) {
+        if (profile.id == peer?.id) {
+            requestCall(kind)
+            return
+        }
+        val needed = if (kind == "video") {
+            arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+        } else {
+            arrayOf(Manifest.permission.RECORD_AUDIO)
+        }
+        if (needed.all {
+                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+            }
+        ) {
+            scope.launch {
+                val cid = try {
+                    chatRepo.getOrCreateConversation(profile.id)
+                } catch (_: Exception) {
+                    null
+                }
+                if (cid == null) {
+                    Toast.makeText(context, "Could not start the call. Try again.", Toast.LENGTH_SHORT).show()
+                    return@launch
+                }
+                val err = callViewModel.startCall(profile, kind, cid)
+                if (err != null) Toast.makeText(context, err, Toast.LENGTH_SHORT).show()
+            }
+        } else {
+            pendingCallKind = kind
+            pendingCallProfile = profile
             callPermission.launch(needed)
         }
     }
@@ -472,14 +647,23 @@ fun ChatScreen(
             } else {
                 peer
             }
-            Avatar(profile = headerProfile, size = AvatarSize.SM, online = if (isGroup) null else peerOnline)
+            // v3.1.1: tapping the peer's avatar or name (1-to-1 only) opens
+            // their public profile. Group headers still open group settings.
+            Avatar(
+                profile = headerProfile,
+                size = AvatarSize.SM,
+                online = if (isGroup) null else peerOnline,
+                modifier = if (isGroup) Modifier else Modifier.clickable {
+                    peer?.let { openPublicProfile(it) }
+                }
+            )
             Spacer(Modifier.width(10.dp))
             Column(
                 modifier = Modifier
                     .weight(1f)
                     .then(
                         if (isGroup) Modifier.clickable { showGroupSettings = true }
-                        else Modifier
+                        else Modifier.clickable { peer?.let { openPublicProfile(it) } }
                     )
             ) {
                 Text(
@@ -818,62 +1002,72 @@ fun ChatScreen(
                     },
                     modifier = Modifier.weight(1f)
                 )
-                Spacer(Modifier.width(8.dp))
-                if ((input.isNotBlank() || editingMessage != null) && !isVoiceRecording) {
-                    // Green send circle (WhatsApp-style). In edit mode
-                    // this saves the edit instead of sending a new
-                    // message (v3.1.0).
-                    Box(
-                        modifier = Modifier
-                            .size(44.dp)
-                            .clip(CircleShape)
-                            .background(Emerald)
-                            .clickable(enabled = !sending) {
-                                if (editingMessage != null) {
-                                    viewModel.saveEdit(input)
-                                } else {
-                                    viewModel.send(input)
-                                }
-                                input = ""
-                            },
-                        contentAlignment = Alignment.Center
-                    ) {
-                        if (sending) {
-                            CircularProgressIndicator(
-                                modifier = Modifier.size(20.dp),
-                                strokeWidth = 2.dp,
-                                color = Color.White
-                            )
-                        } else {
-                            Icon(
-                                Icons.AutoMirrored.Filled.Send,
-                                contentDescription = "Send",
-                                tint = Color.White
-                            )
-                        }
+            }
+            Spacer(Modifier.width(8.dp))
+            // v3.1.1 (issue 4, fix 1): the mic button lives OUTSIDE the
+            // recording/text-field switch, in the same slot in both
+            // states, so it is never unmounted while recording. It used
+            // to live inside the `else` branch above: start() set
+            // _isRecording, recomposition removed the button, Compose
+            // cancelled its pointerInput coroutine mid-hold, and
+            // finger-up / slide-up / slide-left were never delivered —
+            // onReleaseSend never fired and the recording stuck until
+            // the 120s auto-stop. (The old comment claiming it "stays
+            // mounted" was wrong — the `else` branch unmounted it.)
+            if (!isVoiceRecording && (input.isNotBlank() || editingMessage != null)) {
+                // Green send circle (WhatsApp-style). In edit mode
+                // this saves the edit instead of sending a new
+                // message (v3.1.0).
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(Emerald)
+                        .clickable(enabled = !sending) {
+                            if (editingMessage != null) {
+                                viewModel.saveEdit(input)
+                            } else {
+                                viewModel.send(input)
+                            }
+                            input = ""
+                        },
+                    contentAlignment = Alignment.Center
+                ) {
+                    if (sending) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(20.dp),
+                            strokeWidth = 2.dp,
+                            color = Color.White
+                        )
+                    } else {
+                        Icon(
+                            Icons.AutoMirrored.Filled.Send,
+                            contentDescription = "Send",
+                            tint = Color.White
+                        )
                     }
-                } else {
-                    // v3.1.0 (worker D): hold to record, slide up to lock,
-                    // slide left to cancel. Stays mounted while recording
-                    // so the hold gesture is never cut off by recomposition.
-                    VoiceMicButton(
-                        blocked = !voiceAllowed,
-                        recording = isVoiceRecording,
-                        locked = voiceLocked,
-                        onPressStart = { requestMicAndRecord() },
-                        onLock = { voiceRecorder.setLocked(true) },
-                        onCancelArmed = { armed -> voiceRecorder.setCancelArmed(armed) },
-                        onReleaseSend = { sendVoiceRecording() },
-                        onCancel = { cancelVoiceRecording() },
-                        onBlockedTap = {
-                            Toast.makeText(
-                                context,
-                                "Voice messages are not allowed in this chat.",
-                                Toast.LENGTH_SHORT
-                            ).show()
-                        }
-                    )
                 }
+            } else {
+                // Hold to record, slide up to lock, slide left to
+                // cancel. While recording it shows the red / locked state
+                // and the same hold owns the gesture to the end.
+                VoiceMicButton(
+                    blocked = !voiceAllowed,
+                    recording = isVoiceRecording,
+                    locked = voiceLocked,
+                    onPressStart = { requestMicAndRecord() },
+                    onLock = { voiceRecorder.setLocked(true) },
+                    onCancelArmed = { armed -> voiceRecorder.setCancelArmed(armed) },
+                    onReleaseSend = { sendVoiceRecording() },
+                    onCancel = { cancelVoiceRecording() },
+                    onBlockedTap = {
+                        Toast.makeText(
+                            context,
+                            "Voice messages are not allowed in this chat.",
+                            Toast.LENGTH_SHORT
+                        ).show()
+                    }
+                )
             }
         }
     }
@@ -1024,9 +1218,217 @@ fun ChatScreen(
                 onAccept = {},
                 onDecline = {},
                 onDismiss = { showProfile = false },
-                onClearChat = { showProfile = false; confirmClear = true }
+                onClearChat = { showProfile = false; confirmClear = true },
+                // v3.1.1: the ⋮ menu's "View profile" opens the full
+                // public profile (same screen as the header tap).
+                onViewProfile = { showProfile = false; peer?.let { openPublicProfile(it) } }
             )
         }
+    }
+
+    // v3.1.1: full public profile opened from the chat header or the ⋮
+    // menu (1-to-1 only). WhatsApp-style contact info: the same
+    // PublicProfileScreen the People tab opens (cover, avatar, name,
+    // username, online / last seen, status, bio, badges, Message / call
+    // buttons, mutual friends, social links, city / education, share +
+    // QR) plus a contact-actions footer for the chat peer — Mute
+    // notifications, Create a group with them, shared-media count, and
+    // Block / Unblock — wired to the existing repos (ChatRepository,
+    // CreateGroupScreen's group-create flow, PrivacyRepository's
+    // pingchat_blocks table). No new backend features. The footer lives
+    // here, under the screen, because PublicProfileScreen itself is
+    // another worker's file; moving the rows into it is a later cleanup.
+    val openProfile = publicProfile
+    if (openProfile != null) {
+        val myPeer = peer
+        val isChatPeer = myPeer != null && openProfile.id == myPeer.id
+        val peerName = openProfile.fullName.ifBlank { openProfile.username }
+        Dialog(
+            onDismissRequest = { publicProfile = null },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(colors.bg)
+            ) {
+                Box(modifier = Modifier.weight(1f)) {
+                    PublicProfileScreen(
+                        profile = openProfile,
+                        state = publicProfileState,
+                        online = onlineIds.contains(openProfile.id),
+                        canSeeBio = profileVisibility?.first
+                            ?: canSeeDetails(openProfile, publicProfileState),
+                        canSeeLastSeen = profileVisibility?.second
+                            ?: canSeeDetails(openProfile, publicProfileState),
+                        mutualFriends = profileMutualFriends,
+                        viewCount = profileViewCount,
+                        recentViewers = null,
+                        friendsCount = 0,
+                        mediaSent = 0,
+                        onBack = { publicProfile = null },
+                        onMessage = {
+                            if (isChatPeer) {
+                                // Already in this chat.
+                                publicProfile = null
+                            } else {
+                                scope.launch {
+                                    val cid = try {
+                                        chatRepo.getOrCreateConversation(openProfile.id)
+                                    } catch (_: Exception) {
+                                        null
+                                    }
+                                    if (cid == null) {
+                                        Toast.makeText(context, "Could not open chat. Try again.", Toast.LENGTH_SHORT).show()
+                                    } else {
+                                        publicProfile = null
+                                        onOpenChat(cid)
+                                    }
+                                }
+                            }
+                        },
+                        onAudioCall = { requestProfileCall(openProfile, "audio") },
+                        onVideoCall = { requestProfileCall(openProfile, "video") },
+                        onAddFriend = {
+                            scope.launch {
+                                try { friendsRepo.sendFriendRequest(openProfile.id) } catch (_: Exception) { }
+                                loadPublicProfileState(openProfile)
+                            }
+                        },
+                        onCancelRequest = {
+                            scope.launch {
+                                try { friendsRepo.cancelFriendRequest(openProfile.id) } catch (_: Exception) { }
+                                loadPublicProfileState(openProfile)
+                            }
+                        },
+                        onAccept = {
+                            scope.launch {
+                                try { friendsRepo.respondFriendRequest(openProfile.id, true) } catch (_: Exception) { }
+                                loadPublicProfileState(openProfile)
+                            }
+                        },
+                        onDecline = {
+                            scope.launch {
+                                try { friendsRepo.respondFriendRequest(openProfile.id, false) } catch (_: Exception) { }
+                                loadPublicProfileState(openProfile)
+                            }
+                        },
+                        onOpenProfile = { other -> openPublicProfile(other) }
+                    )
+                }
+                // Contact-actions footer.
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(colors.card)
+                        .navigationBarsPadding()
+                        .padding(horizontal = 16.dp, vertical = 8.dp)
+                ) {
+                    if (isChatPeer) {
+                        val sharedPhotos = messages.filter { it.kind == "photo" && !isMediaExpired(it) }
+                        ContactActionRow(
+                            label = "Mute notifications",
+                            detail = if (chatMuted) "On" else "Off",
+                            onClick = {
+                                val next = !chatMuted
+                                scope.launch {
+                                    val ok = try {
+                                        chatRepo.setChatMuted(conversationId, next)
+                                    } catch (_: Exception) {
+                                        false
+                                    }
+                                    if (ok) {
+                                        prefs.setConversationMuted(conversationId, next)
+                                        chatMuted = next
+                                    } else {
+                                        Toast.makeText(context, "Could not change mute setting. Try again.", Toast.LENGTH_SHORT).show()
+                                    }
+                                }
+                            }
+                        )
+                        ContactActionRow(
+                            label = "Create a group with $peerName",
+                            detail = null,
+                            onClick = { showCreateGroup = true }
+                        )
+                        ContactActionRow(
+                            label = "Shared media",
+                            detail = if (sharedPhotos.isEmpty()) "No photos yet"
+                            else "${sharedPhotos.size} photo${if (sharedPhotos.size == 1) "" else "s"}",
+                            onClick = {
+                                // Opens the newest shared photo in the
+                                // existing fullscreen viewer.
+                                messages.lastOrNull { it.kind == "photo" && !isMediaExpired(it) }?.let {
+                                    publicProfile = null
+                                    viewingPhoto = it
+                                }
+                            }
+                        )
+                    }
+                    ContactActionRow(
+                        label = if (peerBlocked) "Unblock $peerName" else "Block $peerName",
+                        detail = null,
+                        destructive = true,
+                        onClick = {
+                            if (peerBlocked) {
+                                scope.launch {
+                                    try { privacyRepo.unblockUser(openProfile.id) } catch (_: Exception) { }
+                                    peerBlocked = false
+                                    Toast.makeText(context, "$peerName unblocked.", Toast.LENGTH_SHORT).show()
+                                }
+                            } else {
+                                confirmBlock = true
+                            }
+                        }
+                    )
+                }
+            }
+        }
+    }
+
+    // v3.1.1: "Create a group with <peer>" — the existing create-group
+    // flow, with the peer pre-selected.
+    if (showCreateGroup) {
+        Dialog(
+            onDismissRequest = { showCreateGroup = false },
+            properties = DialogProperties(usePlatformDefaultWidth = false)
+        ) {
+            CreateGroupScreen(
+                onGroupCreated = { id ->
+                    showCreateGroup = false
+                    publicProfile = null
+                    onOpenChat(id)
+                },
+                onDismiss = { showCreateGroup = false },
+                initialSelectedIds = publicProfile?.id?.let { setOf(it) } ?: emptySet()
+            )
+        }
+    }
+
+    // v3.1.1: confirm before blocking — blocking silences the peer
+    // everywhere (messages, calls, friend requests).
+    if (confirmBlock) {
+        val target = publicProfile
+        AlertDialog(
+            onDismissRequest = { confirmBlock = false },
+            title = { Text("Block ${target?.fullName?.ifBlank { target?.username } ?: "this user"}?") },
+            text = { Text("You won't receive messages or calls from them. You can unblock them anytime from here or from Settings > Privacy & Security > Blocked users.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmBlock = false
+                    val id = target?.id ?: return@TextButton
+                    val name = target.fullName.ifBlank { target.username }
+                    scope.launch {
+                        try { privacyRepo.blockUser(id) } catch (_: Exception) { }
+                        peerBlocked = true
+                        Toast.makeText(context, "$name blocked.", Toast.LENGTH_SHORT).show()
+                    }
+                }) { Text("Block", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmBlock = false }) { Text("Cancel") }
+            }
+        )
     }
 
     // Fullscreen photo viewer. Tap anywhere (or the X) to close.
@@ -1214,7 +1616,12 @@ private fun MessageBubble(
                             fontWeight = FontWeight.Bold,
                             color = Emerald,
                             maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
+                            overflow = TextOverflow.Ellipsis,
+                            // v3.1.1: in a photo bubble no row may be wider
+                            // than the photo (240dp max) or it stretches the
+                            // bubble past the image — see the MetaRow note
+                            // below. Text bubbles keep the 300dp cap.
+                            modifier = if (message.kind == "photo") Modifier.widthIn(max = 240.dp) else Modifier
                         )
                     }
                     if (message.forwardedFrom != null) {
@@ -1233,6 +1640,10 @@ private fun MessageBubble(
                                     if (mine) Color.White.copy(alpha = 0.18f) else colors.card2
                                 )
                                 .padding(horizontal = 8.dp, vertical = 4.dp)
+                                // v3.1.1: same 240dp cap as the sender name —
+                                // a long reply preview must not widen a
+                                // photo bubble past its image.
+                                .then(if (message.kind == "photo") Modifier.widthIn(max = 240.dp) else Modifier)
                         ) {
                             Text(
                                 text = replyPreview(replyTo),
@@ -1274,11 +1685,17 @@ private fun MessageBubble(
                                     modifier = Modifier.padding(start = 12.dp, end = 8.dp, top = 6.dp)
                                 )
                             }
-                            // The time/ticks row keeps its place below the
-                            // photo, unchanged — only its padding is local
-                            // now that the bubble itself has no padding.
+                            // v3.1.1: the time/ticks row must NOT use
+                            // fillMaxWidth (see MetaRow) — it forced every
+                            // photo bubble to the 300dp outer cap, leaving
+                            // a dark gap right of the photo. It now wraps
+                            // its content and sits at the bubble's right
+                            // edge; only its padding is local now that the
+                            // bubble itself has no padding.
                             Box(
-                                modifier = Modifier.padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 6.dp)
+                                modifier = Modifier
+                                    .align(Alignment.End)
+                                    .padding(start = 12.dp, end = 8.dp, top = 4.dp, bottom = 6.dp)
                             ) {
                                 MetaRow(timeText = timeText, tickState = tickState, mine = mine)
                             }
@@ -1383,8 +1800,14 @@ private fun MessageBubble(
 /** Time (+ ticks for my messages), right-aligned at a bubble's bottom. */
 @Composable
 private fun MetaRow(timeText: String, tickState: TickState?, mine: Boolean) {
+    // v3.1.1: NO fillMaxWidth here. This row lives inside a photo
+    // bubble's wrapping Column; fillMaxWidth expanded it to the 300dp
+    // outer cap, so every photo bubble was 300dp wide while the photo
+    // itself is at most 240dp (less for portraits) — the dark gap on
+    // the photo's right, which the v3.0.2 "0 padding" fix never touched.
+    // It now wraps its content; the caller aligns it to the bubble's
+    // right edge.
     Row(
-        modifier = Modifier.fillMaxWidth(),
         horizontalArrangement = Arrangement.End,
         verticalAlignment = Alignment.CenterVertically
     ) {
@@ -1397,6 +1820,38 @@ private fun MetaRow(timeText: String, tickState: TickState?, mine: Boolean) {
         if (mine && tickState != null) {
             Spacer(Modifier.width(2.dp))
             TickIcon(state = tickState, onBubble = true)
+        }
+    }
+}
+
+/** One WhatsApp-style contact-info action row in the profile footer. */
+@Composable
+private fun ContactActionRow(
+    label: String,
+    detail: String?,
+    onClick: () -> Unit,
+    destructive: Boolean = false
+) {
+    val colors = pingChatColors
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clickable(onClick = onClick)
+            .padding(vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyLarge,
+            color = if (destructive) MaterialTheme.colorScheme.error else colors.text,
+            modifier = Modifier.weight(1f)
+        )
+        if (detail != null) {
+            Text(
+                text = detail,
+                style = MaterialTheme.typography.bodyMedium,
+                color = colors.muted
+            )
         }
     }
 }

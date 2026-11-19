@@ -66,8 +66,8 @@ import com.mdhasibulislam.pingchat.ui.viewmodel.ChatsViewModel
 
 /** Chats tab: conversation list with search, last message, time, unread badge.
  *  v3.1.0: groups in the same list, long-press menu (pin / mute /
- *  archive), Archived section, new-group button. The story strip above
- *  the list belongs to worker B — untouched here. */
+ *  archive), Archived section, new-group button.
+ *  v3.1.1: story strip moved to the top, above the search bar. */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
 fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
@@ -129,6 +129,9 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
                 Icon(Icons.Default.GroupAdd, contentDescription = "New group", tint = colors.text)
             }
         }
+        // v3.1.1: story ring strip at the top of the Chats tab (12-hour
+        // stories) — above the search bar and the Chat | Active tabs.
+        StoryStrip()
         // Messenger-style pill search: rounded, grey fill, no outline.
         TextField(
             value = query,
@@ -167,8 +170,6 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
                 onClick = { tab = 1 }
             )
         }
-        // v3.1.0: story ring strip above the chat list (12-hour stories).
-        StoryStrip()
         if (error != null) {
             Text(
                 text = error ?: "",
