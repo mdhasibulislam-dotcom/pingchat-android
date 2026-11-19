@@ -1,5 +1,9 @@
 plugins {
     id("com.android.application")
+    // FCM ONLY in v3.0.0: the google-services plugin reads
+    // app/google-services.json (project ping-chat-fcda6) so FirebaseApp can
+    // initialise for push receiving. No other Firebase service is used —
+    // the data layer is Supabase (see below).
     id("com.google.gms.google-services")
     id("org.jetbrains.kotlin.plugin.serialization")
     id("org.jetbrains.kotlin.plugin.compose")
@@ -13,11 +17,12 @@ android {
         applicationId = "com.mdhasibulislam.pingchat"
         minSdk = 24
         targetSdk = 37
-        // v2.0.0: full backend move from Supabase to Firebase. Same package
-        // name, so this installs over v1.0.5 — but Firebase Auth is a
-        // separate system, so users must register fresh accounts.
-        versionCode = 16
-        versionName = "2.0.9"
+        // v3.0.0: full backend move from Firebase to the NEW Supabase
+        // project (tjsalnhtuqqigyhvgpnb). Same package name, so this
+        // installs over v2.0.9 — but Supabase Auth is a separate system,
+        // so users must register fresh accounts.
+        versionCode = 17
+        versionName = "3.0.0"
     }
 
     // All debug builds share the committed app/debug.keystore, so every CI
@@ -77,23 +82,31 @@ dependencies {
     // App foreground/background for presence (online / lastSeen).
     implementation("androidx.lifecycle:lifecycle-process:2.8.6")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.10.1")
-    // Task.await() for Firebase (Auth / Firestore / Storage / Messaging).
+    // Task.await() for FirebaseMessaging.token (push token save).
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-play-services:1.10.1")
     implementation("org.jetbrains.kotlinx:kotlinx-serialization-json:1.9.0")
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
 
-    // Firebase (BoM 35.2.0) — Auth + Firestore + Storage + Cloud Messaging.
-    // Config comes from app/google-services.json (project ping-chat-fcda6);
-    // that file is public client config and is committed on purpose.
-    implementation(platform("com.google.firebase:firebase-bom:35.2.0"))
-    implementation("com.google.firebase:firebase-auth")
-    implementation("com.google.firebase:firebase-firestore")
-    implementation("com.google.firebase:firebase-storage")
+    // Supabase (Auth + Database + Realtime + Storage) — NEW project
+    // tjsalnhtuqqigyhvgpnb ("hasibulialam's Project"). Ktor needs a real
+    // HTTP engine on Android: without ktor-client-okhttp the Supabase
+    // client crashes at startup ("Failed to find HTTP client engine").
+    // Version must match the Ktor version supabase-kt 3.9.0 uses (3.6.0).
+    implementation("io.ktor:ktor-client-okhttp:3.6.0")
+    implementation("io.github.jan-tennert.supabase:auth-kt:3.9.0")
+    implementation("io.github.jan-tennert.supabase:postgrest-kt:3.9.0")
+    implementation("io.github.jan-tennert.supabase:realtime-kt:3.9.0")
+    implementation("io.github.jan-tennert.supabase:storage-kt:3.9.0")
+
+    // Firebase Cloud Messaging ONLY (push receiving). Config comes from
+    // app/google-services.json (project ping-chat-fcda6); that file is
+    // public client config and is committed on purpose. No Firebase Auth,
+    // Firestore or Storage in v3.0.0.
     implementation("com.google.firebase:firebase-messaging")
 
-    // Google Sign-In (ID token -> Firebase signInWithCredential).
-    // Works only once the Google provider is enabled in the Firebase
-    // console — until then the Google button shows a friendly message.
+    // Google Sign-In (ID token -> Supabase signInWith(IDToken)).
+    // Works once the Google provider is enabled in the Supabase console
+    // for the new project — the Web client ID lives in SupabaseClient.kt.
     implementation("com.google.android.gms:play-services-auth:21.2.0")
 
     // Avatar images.
