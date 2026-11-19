@@ -1,10 +1,15 @@
 package com.mdhasibulislam.pingchat
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -24,6 +29,7 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
+import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -108,6 +114,24 @@ class MainActivity : ComponentActivity() {
                     CallManager.start(applicationContext, currentUser!!.uid, prefs)
                 } else if (isLoggedIn == false) {
                     CallManager.stop()
+                }
+            }
+
+            // v2.0.9: ask once for the notification permission (Android 13+)
+            // after sign-in — without it, no notification shows at all on a
+            // fresh install. The pushPrompted flag makes sure we never nag.
+            val pushPermission = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestPermission()
+            ) { /* asked once — granted or not, we do not ask again */ }
+            LaunchedEffect(isLoggedIn) {
+                if (isLoggedIn == true && !prefs.pushPrompted &&
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    ContextCompat.checkSelfPermission(
+                        applicationContext, Manifest.permission.POST_NOTIFICATIONS
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    prefs.pushPrompted = true
+                    pushPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
                 }
             }
 
