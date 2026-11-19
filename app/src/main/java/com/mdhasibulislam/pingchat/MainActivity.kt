@@ -49,6 +49,8 @@ import com.mdhasibulislam.pingchat.ui.screens.ForgotPasswordScreen
 import com.mdhasibulislam.pingchat.ui.screens.IncomingCallDialog
 import com.mdhasibulislam.pingchat.ui.screens.LoginScreen
 import com.mdhasibulislam.pingchat.ui.screens.MainScreen
+import com.mdhasibulislam.pingchat.ui.screens.PrivacyPolicyScreen
+import com.mdhasibulislam.pingchat.ui.screens.PrivacySecurityScreen
 import com.mdhasibulislam.pingchat.ui.screens.RegisterScreen
 import com.mdhasibulislam.pingchat.ui.screens.SettingsScreen
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
@@ -297,7 +299,10 @@ class MainActivity : ComponentActivity() {
                                 },
                                 prefs = prefs,
                                 openPeopleTab = openFriendRequests,
-                                onPeopleTabConsumed = { openFriendRequestsState.value = false }
+                                onPeopleTabConsumed = { openFriendRequestsState.value = false },
+                                // v3.1.0 (worker A): Settings > Privacy & Security.
+                                onPrivacySecurityClick = { navController.navigate("privacy_security") },
+                                onPrivacyPolicyClick = { navController.navigate("privacy_policy") }
                             )
                         }
                         composable("settings") {
@@ -309,8 +314,24 @@ class MainActivity : ComponentActivity() {
                                 onDarkThemeChange = { enabled ->
                                     darkTheme = enabled
                                     prefs.darkTheme = enabled
-                                }
+                                },
+                                onPrivacySecurityClick = { navController.navigate("privacy_security") },
+                                onPrivacyPolicyClick = { navController.navigate("privacy_policy") }
                             )
+                        }
+                        // v3.1.0: Privacy & Security (worker A) — opened from
+                        // Settings > Privacy & Security. The Privacy Policy
+                        // row at its bottom opens "privacy_policy" (worker G).
+                        composable("privacy_security") {
+                            PrivacySecurityScreen(
+                                onBack = { navController.popBackStack() },
+                                onOpenPrivacyPolicy = { navController.navigate("privacy_policy") }
+                            )
+                        }
+                        // v3.1.0: Privacy Policy (worker G) — opened from
+                        // Settings > Privacy & Security > "Privacy Policy".
+                        composable("privacy_policy") {
+                            PrivacyPolicyScreen(onBack = { navController.popBackStack() })
                         }
                         composable("chat/{conversationId}") { backStackEntry ->
                             val conversationId =
