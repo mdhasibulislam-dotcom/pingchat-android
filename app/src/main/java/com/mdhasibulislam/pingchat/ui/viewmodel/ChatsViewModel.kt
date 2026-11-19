@@ -8,6 +8,7 @@ import com.mdhasibulislam.pingchat.data.ConversationItem
 import com.mdhasibulislam.pingchat.data.FriendsRepository
 import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.data.SessionManager
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -78,6 +79,10 @@ class ChatsViewModel : ViewModel() {
                     delay(300)
                     refresh()
                 }
+            } catch (e: CancellationException) {
+                // v3.1.1 (issue 5): ViewModel cleared — let the collector
+                // die cancelled instead of swallowing the cancellation.
+                throw e
             } catch (e: Exception) {
                 // live refresh is best-effort
             }
@@ -100,6 +105,14 @@ class ChatsViewModel : ViewModel() {
                 _items.value = all.filter { !it.isArchived }
                 _archivedItems.value = all.filter { it.isArchived }
                 _error.value = null
+            } catch (e: CancellationException) {
+                // v3.1.1 (issue 5): a refresh superseded by a newer one
+                // (refreshJob?.cancel() above) is NOT an error — it is
+                // normal operation. Rethrow so the cancellation is never
+                // turned into an error message: its message
+                // ("StandaloneCoroutine was cancelled") used to leak into
+                // the red error line on the Chats screen.
+                throw e
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
             } finally {
