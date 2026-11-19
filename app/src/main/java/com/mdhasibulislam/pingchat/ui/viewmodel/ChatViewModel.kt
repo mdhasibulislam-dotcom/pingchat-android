@@ -7,7 +7,10 @@ import androidx.lifecycle.viewModelScope
 import com.mdhasibulislam.pingchat.data.AuthRepository
 import com.mdhasibulislam.pingchat.data.ChatMessage
 import com.mdhasibulislam.pingchat.data.ChatRepository
+import com.mdhasibulislam.pingchat.data.ConversationItem
+import com.mdhasibulislam.pingchat.data.GroupInfo
 import com.mdhasibulislam.pingchat.data.PresenceState
+import com.mdhasibulislam.pingchat.data.PrivacyRepository
 import com.mdhasibulislam.pingchat.data.Profile
 import com.mdhasibulislam.pingchat.data.PushSender
 import com.mdhasibulislam.pingchat.data.Reaction
@@ -28,11 +31,16 @@ import java.io.File
 import java.time.Instant
 
 /**
- * One open 1-to-1 chat: messages, read ticks, typing, reactions, deletes.
+ * One open chat: messages, read ticks, typing, reactions, deletes.
  * Mirrors js/chats.js (openConversation + ticks + typing).
+ * v3.1.0 (worker E): also group chats (sender names, no calls), message
+ * edit, forward, in-chat search and message pin. Group read receipts are
+ * NOT tracked — tickState stays 1-to-1 only (peer read marker).
  */
 class ChatViewModel(private val conversationId: String) : ViewModel() {
     private val repo = ChatRepository()
+    private val groupRepo = com.mdhasibulislam.pingchat.data.GroupRepository()
+    private val privacyRepo = PrivacyRepository()
 
     val myId: String? get() = repo.myId()
 
@@ -41,6 +49,34 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
 
     private val _peer = MutableStateFlow<Profile?>(null)
     val peer: StateFlow<Profile?> = _peer.asStateFlow()
+
+    /** v3.1.0: true when this conversation is a group (header, bubbles). */
+    private val _isGroup = MutableStateFlow(false)
+    val isGroup: StateFlow<Boolean> = _isGroup.asStateFlow()
+
+    /** v3.1.0: group name / photo (null for 1-to-1 chats). */
+    private val _groupName = MutableStateFlow<String?>(null)
+    val groupName: StateFlow<String?> = _groupName.asStateFlow()
+    private val _groupAvatarUrl = MutableStateFlow<String?>(null)
+    val groupAvatarUrl: StateFlow<String?> = _groupAvatarUrl.asStateFlow()
+
+    /** v3.1.0: group members (sender names on bubbles + push targets). */
+    private val _groupInfo = MutableStateFlow<GroupInfo?>(null)
+    val groupInfo: StateFlow<GroupInfo?> = _groupInfo.asStateFlow()
+
+    /** Sender id -> display name, for group bubbles. */
+    val senderNames: Map<String, String>
+        get() = _groupInfo.value?.members?.mapNotNull { member ->
+            val profile = member.profile ?: return@mapNotNull null
+            member.participant.userId to (profile.fullName.ifBlank { profile.username })
+        }?.toMap() ?: emptyMap()
+
+    /** v3.1.0: may I see the peer's last seen? (worker A owns the
+     *  setting; PrivacyRepository is the fallback until it lands.)
+     *  Default true — the header only shows "Last seen …" when this is
+     *  true AND the peer is offline AND has a last_seen timestamp. */
+    private val _canSeePeerLastSeen = MutableStateFlow(true)
+    val canSeePeerLastSeen: StateFlow<Boolean> = _canSeePeerLastSeen.asStateFlow()
 
     private val _peerLastReadAt = MutableStateFlow<String?>(null)
     val peerLastReadAt: StateFlow<String?> = _peerLastReadAt.asStateFlow()
@@ -75,6 +111,34 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     private val _replyTo = MutableStateFlow<ChatMessage?>(null)
     val replyTo: StateFlow<ChatMessage?> = _replyTo.asStateFlow()
 
+    // ---------- v3.1.0: edit / forward / search / pin ----------
+
+    /** Message being edited (composer shows edit mode while non-null). */
+    private val _editingMessage = MutableStateFlow<ChatMessage?>(null)
+    val editingMessage: StateFlow<ChatMessage?> = _editingMessage.asStateFlow()
+
+    /** The pinned message of this chat (banner above the messages). */
+    private val _pinnedMessage = MutableStateFlow<ChatMessage?>(null)
+    val pinnedMessage: StateFlow<ChatMessage?> = _pinnedMessage.asStateFlow()
+
+    /** In-chat search: current query (empty = search closed). */
+    private val _searchQuery = MutableStateFlow("")
+    val searchQuery: StateFlow<String> = _searchQuery.asStateFlow()
+
+    /** Ids of loaded messages matching the query, oldest first. The
+     *  search runs over the loaded messages only (loadMessages caps at
+     *  200) — no server query, so it works offline from cache too. */
+    private val _searchMatches = MutableStateFlow<List<String>>(emptyList())
+    val searchMatches: StateFlow<List<String>> = _searchMatches.asStateFlow()
+
+    /** Index into [searchMatches] currently jumped to (-1 = none yet). */
+    private val _searchMatchIndex = MutableStateFlow(-1)
+    val searchMatchIndex: StateFlow<Int> = _searchMatchIndex.asStateFlow()
+
+    /** Chats a message can be forwarded to (all mine except this one). */
+    private val _forwardTargets = MutableStateFlow<List<ConversationItem>>(emptyList())
+    val forwardTargets: StateFlow<List<ConversationItem>> = _forwardTargets.asStateFlow()
+
     /**
      * Delivered is sticky within the session: once the peer is seen online,
      * my messages never revert to a single tick if they go offline again
@@ -92,24 +156,32 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     private var typingLastSentAt = 0L
     private var visible = false
 
-    // View-once media: recorder + player live here so a rotation or a
-    // re-render never loses them. Consumed ids guard double-consume.
+    // Voice media: recorder + player live here so a rotation or a
+    // re-render never loses them.
     private var recorder: MediaRecorder? = null
     private var recordingFile: File? = null
     private var recordingJob: Job? = null
     private var player: MediaPlayer? = null
     private var playingId: String? = null
-    private val consumedIds = mutableSetOf<String>()
-    // View-once ids the recipient tapped Keep on. Added synchronously in
-    // keepMessage() (before the network call) so a photo-viewer close or
-    // a voice finishing a moment later can never consume a kept message.
-    private val keptIds = mutableSetOf<String>()
 
     init {
         viewModelScope.launch {
-            val (peerProfile, peerRead) = repo.loadPeer(conversationId)
-            _peer.value = peerProfile
-            _peerLastReadAt.value = peerRead
+            val conv = repo.loadConversation(conversationId)
+            if (conv?.isGroup == true) {
+                _isGroup.value = true
+                _groupName.value = conv.groupName
+                _groupAvatarUrl.value = conv.groupAvatarUrl
+                _groupInfo.value = groupRepo.loadGroupInfo(conversationId)
+            } else {
+                val (peerProfile, peerRead) = repo.loadPeer(conversationId)
+                _peer.value = peerProfile
+                _peerLastReadAt.value = peerRead
+                // Last-seen visibility (worker A): only check for 1-to-1.
+                if (peerProfile != null) {
+                    _canSeePeerLastSeen.value =
+                        privacyRepo.canSeeLastSeen(peerProfile.id)
+                }
+            }
             loadMessages()
             startPeerReadFlow()
             startTypingFlows()
@@ -138,6 +210,8 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
                 _messages.value = list
                 val ids = list.map { it.id }
                 _reactions.value = repo.loadReactions(conversationId, ids)
+                _pinnedMessage.value = repo.loadPinnedMessage(conversationId)
+                refreshSearchMatches()
                 // Messages are in: mark read with the fresh server
                 // watermark. This is the call that matters — the
                 // open-time mark (setVisible) usually runs before the
@@ -181,21 +255,40 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         }
     }
 
-    /** WhatsApp-style push: tell the peer a message arrived (best-effort). */
+    /** WhatsApp-style push: tell the peer a message arrived (best-effort).
+     *  Groups: push every OTHER member (each with their own token) with
+     *  the group name as the title. Muted members never get the push in
+     *  the first place only when the sender knows — the receiver side
+     *  (PingChatMessagingService, Prefs.mutedConversationIds) is the
+     *  backstop, so muting works even for pushes sent before muting. */
     private fun notifyPeer(preview: String) {
-        val token = _peer.value?.fcmToken ?: return
         val myName = SessionManager.profile.value?.fullName?.ifBlank {
             SessionManager.profile.value?.username
         } ?: "PingChat"
         viewModelScope.launch {
-            PushSender.sendPush(
-                token, myName, preview,
-                mapOf("type" to "message", "conversationId" to conversationId)
-            )
+            if (_isGroup.value) {
+                val title = _groupName.value?.takeIf { it.isNotBlank() } ?: "Group"
+                val members = _groupInfo.value?.members ?: return@launch
+                for (member in members) {
+                    val profile = member.profile ?: continue
+                    if (profile.id == myId) continue
+                    val token = profile.fcmToken ?: continue
+                    PushSender.sendPush(
+                        token, "$myName in $title", preview,
+                        mapOf("type" to "message", "conversationId" to conversationId)
+                    )
+                }
+            } else {
+                val token = _peer.value?.fcmToken ?: return@launch
+                PushSender.sendPush(
+                    token, myName, preview,
+                    mapOf("type" to "message", "conversationId" to conversationId)
+                )
+            }
         }
     }
 
-    /** Send a view-once photo picked from the gallery. */
+    /** Send a photo picked from the gallery. */
     fun sendPhoto(bytes: ByteArray, mime: String) {
         if (_sending.value) return
         viewModelScope.launch {
@@ -211,7 +304,7 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         }
     }
 
-    // ---------- view-once voice: record + play ----------
+    // ---------- voice: record + play ----------
 
     /** Start recording a voice message into outputFile (max 120s, then auto-send). */
     @Suppress("DEPRECATION")
@@ -245,7 +338,7 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         }
     }
 
-    /** Stop recording and send the voice message (view-once). */
+    /** Stop recording and send the voice message. */
     fun stopRecordingAndSend() {
         val rec = recorder ?: return
         recorder = null
@@ -283,7 +376,7 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         }
     }
 
-    /** Play a voice message (tap again to stop). A full listen consumes it. */
+    /** Play a voice message (tap again to stop). */
     fun playVoice(message: ChatMessage) {
         val url = message.mediaUrl
         if (url.isNullOrBlank()) return
@@ -303,8 +396,6 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
             }
             mp.setOnCompletionListener {
                 stopPlayback()
-                // Full listen: view-once consume (recipient only).
-                consumeViewOnce(message)
             }
             mp.setOnErrorListener { _, _, _ ->
                 stopPlayback()
@@ -326,67 +417,6 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
         } catch (_: Exception) {
         }
         player = null
-    }
-
-    /**
-     * View-once consume: the recipient closing a photo or finishing a
-     * voice message deletes the message doc + storage file (the repo
-     * refuses the sender / already-consumed / non-participant).
-     * Never consumes my own sent media, and never consumes a message
-     * the recipient kept — the kept flag is resolved against the live
-     * list (the snapshot passed in may predate a Keep tap) and the
-     * consume RPC itself refuses kept rows as a server-side backstop.
-     */
-    fun consumeViewOnce(message: ChatMessage) {
-        if (!message.viewOnce) return
-        if (message.senderId == myId) return
-        if (message.kept || keptIds.contains(message.id)) return
-        // Resolve the live row: a Keep tap updates _messages, but the
-        // snapshot handed to this call (e.g. from the photo viewer or
-        // the voice completion listener) may still say kept = false.
-        val current = _messages.value.firstOrNull { it.id == message.id }
-        if (current?.kept == true) return
-        if (!consumedIds.add(message.id)) return
-        viewModelScope.launch {
-            if (repo.consumeMessage(conversationId, message.id)) {
-                _messages.update { list -> list.filterNot { it.id == message.id } }
-                val path = message.mediaPath
-                if (path != null) {
-                    // Let the fullscreen photo finish loading from its URL
-                    // before the file disappears from Storage.
-                    delay(5000)
-                    val bucket = if (message.kind == "photo") "chat-photos" else "voice-messages"
-                    repo.deleteMedia(bucket, path)
-                }
-            }
-        }
-    }
-
-    /**
-     * Keep a view-once message in the chat (recipient only): the message
-     * is NOT deleted after viewing/listening and renders as a normal
-     * photo/voice message afterwards. "Keep" means keep in the chat —
-     * it does not save a copy to the device. The local list is marked
-     * kept synchronously so a consume triggered a moment later (photo
-     * viewer closing, voice finishing) cannot race the network call;
-     * if the update fails, the flag is rolled back.
-     */
-    fun keepMessage(message: ChatMessage) {
-        if (!message.viewOnce) return
-        if (message.senderId == myId) return
-        if (message.kept || !keptIds.add(message.id)) return
-        _messages.update { list ->
-            list.map { if (it.id == message.id) it.copy(kept = true) else it }
-        }
-        viewModelScope.launch {
-            if (!repo.keepMessage(message.id)) {
-                keptIds.remove(message.id)
-                _messages.update { list ->
-                    list.map { if (it.id == message.id) it.copy(kept = false) else it }
-                }
-                _error.value = "Could not keep this message. Try again."
-            }
-        }
     }
 
     fun toggleReaction(messageId: String, emoji: String) {
@@ -429,6 +459,158 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
                 _error.value = AuthRepository.friendlyError(e)
             }
         }
+    }
+
+    // ---------- v3.1.0: edit / forward / search / pin ----------
+
+    /** Start editing my own text message (composer switches to edit mode). */
+    fun startEdit(message: ChatMessage) {
+        if (message.kind != "text" || message.senderId != myId) return
+        _editingMessage.value = message
+    }
+
+    fun cancelEdit() {
+        _editingMessage.value = null
+    }
+
+    /** Save the edit (RPC: sender-only, text-only). The local row is
+     *  updated at once with edited_at = now so the "edited" label shows
+     *  without waiting for the realtime UPDATE to round-trip. */
+    fun saveEdit(newBody: String) {
+        val target = _editingMessage.value ?: return
+        val body = newBody.trim()
+        if (body.isEmpty() || body == target.body) {
+            _editingMessage.value = null
+            return
+        }
+        _editingMessage.value = null
+        viewModelScope.launch {
+            if (repo.editMessage(target.id, body)) {
+                val editedAt = Instant.now().toString()
+                _messages.update { list ->
+                    list.map {
+                        if (it.id == target.id) it.copy(body = body, editedAt = editedAt)
+                        else it
+                    }
+                }
+            } else {
+                _error.value = "Could not edit this message. Try again."
+            }
+        }
+    }
+
+    /** Chats a message can be forwarded to (loaded when the picker opens). */
+    fun loadForwardTargets() {
+        viewModelScope.launch {
+            _forwardTargets.value = try {
+                repo.loadConversations().filter { it.conversation.id != conversationId }
+            } catch (e: Exception) {
+                emptyList()
+            }
+        }
+    }
+
+    /**
+     * Forward [message] into [targetConversationId]. Checks
+     * PrivacyRepository.canForwardMessage(original sender) first — the
+     * forward setting belongs to the ORIGINAL sender (worker A). The
+     * RPC then copies the row (refusing view-once / non-members /
+     * blocks) and the forwarded copy shows a "Forwarded" label.
+     * Returns true when the copy landed.
+     */
+    fun forwardMessage(message: ChatMessage, targetConversationId: String) {
+        viewModelScope.launch {
+            if (!privacyRepo.canForwardMessage(message.senderId)) {
+                _error.value = "This message cannot be forwarded."
+                return@launch
+            }
+            val newId = repo.forwardMessage(message.id, targetConversationId)
+            if (newId == null) {
+                _error.value = "Could not forward this message. Try again."
+            } else if (targetConversationId == conversationId) {
+                loadMessages()
+            }
+        }
+    }
+
+    /** Pin this message (unpins the previous one) or unpin it. */
+    fun togglePin(message: ChatMessage) {
+        viewModelScope.launch {
+            val pin = !message.isPinned
+            if (!repo.setMessagePinned(message.id, pin)) {
+                _error.value = "Could not ${if (pin) "pin" else "unpin"} this message. Try again."
+                return@launch
+            }
+            if (pin) {
+                _pinnedMessage.value = message.copy(isPinned = true)
+                _messages.update { list ->
+                    list.map {
+                        when (it.id) {
+                            message.id -> it.copy(isPinned = true)
+                            else -> if (it.isPinned) it.copy(isPinned = false) else it
+                        }
+                    }
+                }
+            } else {
+                _pinnedMessage.value = null
+                _messages.update { list ->
+                    list.map { if (it.id == message.id) it.copy(isPinned = false) else it }
+                }
+            }
+        }
+    }
+
+    /** Unpin the currently pinned message (banner's dismiss action). */
+    fun unpinCurrent() {
+        val pinned = _pinnedMessage.value ?: return
+        togglePin(pinned)
+    }
+
+    /** In-chat search: set the query and recompute matches. Empty query
+     *  closes the search. Matches are text-message bodies containing the
+     *  query (case-insensitive), oldest first. */
+    fun setSearchQuery(query: String) {
+        _searchQuery.value = query
+        refreshSearchMatches()
+    }
+
+    private fun refreshSearchMatches() {
+        val q = _searchQuery.value.trim()
+        if (q.isBlank()) {
+            _searchMatches.value = emptyList()
+            _searchMatchIndex.value = -1
+            return
+        }
+        val matches = _messages.value
+            .filter { it.kind == "text" && it.body.contains(q, ignoreCase = true) }
+            .map { it.id }
+        val previous = _searchMatches.value
+        _searchMatches.value = matches
+        // Keep the current position when the list only grew (a new
+        // message arrived); otherwise restart from the first match.
+        _searchMatchIndex.value = if (matches == previous) _searchMatchIndex.value else 0
+        if (matches.isEmpty()) _searchMatchIndex.value = -1
+    }
+
+    /** Id of the match the UI should jump to, or null. */
+    val currentSearchMatchId: String?
+        get() {
+            val idx = _searchMatchIndex.value
+            val list = _searchMatches.value
+            return if (idx in list.indices) list[idx] else null
+        }
+
+    fun nextSearchMatch() {
+        val list = _searchMatches.value
+        if (list.isEmpty()) return
+        _searchMatchIndex.value = (_searchMatchIndex.value + 1) % list.size
+    }
+
+    fun previousSearchMatch() {
+        val list = _searchMatches.value
+        if (list.isEmpty()) return
+        val cur = _searchMatchIndex.value
+        _searchMatchIndex.value = if (cur <= 0) list.size - 1 else cur - 1
     }
 
     /** Tick state for one of MY messages — same 3 states as the web app. */

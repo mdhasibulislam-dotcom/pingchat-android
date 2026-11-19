@@ -3,11 +3,14 @@ package com.mdhasibulislam.pingchat.ui.viewmodel
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mdhasibulislam.pingchat.data.AuthRepository
+import com.mdhasibulislam.pingchat.data.CallManager
 import com.mdhasibulislam.pingchat.data.ChatRepository
 import com.mdhasibulislam.pingchat.data.FriendState
 import com.mdhasibulislam.pingchat.data.FriendsRepository
 import com.mdhasibulislam.pingchat.data.Friendship
 import com.mdhasibulislam.pingchat.data.Profile
+import com.mdhasibulislam.pingchat.data.PrivacyRepository
+import com.mdhasibulislam.pingchat.data.ProfileRepository
 import com.mdhasibulislam.pingchat.data.PushSender
 import com.mdhasibulislam.pingchat.data.SessionManager
 import kotlinx.coroutines.async
@@ -21,7 +24,9 @@ import kotlinx.coroutines.launch
 /** People tab: directory, friend requests, friends. Mirrors js/people.js + js/friends.js. */
 class PeopleViewModel : ViewModel() {
     private val repo = FriendsRepository()
+    private val profileRepo = ProfileRepository()
     private val chatRepo = ChatRepository()
+    private val privacyRepo = PrivacyRepository()
 
     val myId: String? get() = repo.myId()
 
@@ -46,6 +51,106 @@ class PeopleViewModel : ViewModel() {
     /** A conversation id to open after "Message" is tapped (consumed by the screen). */
     private val _openedConversation = MutableStateFlow<String?>(null)
     val openedConversation: StateFlow<String?> = _openedConversation.asStateFlow()
+
+    // ---------- v3.1.0 public profile ----------
+
+    /** Mutual friends with the profile currently being viewed. */
+    private val _mutualFriends = MutableStateFlow<List<Profile>>(emptyList())
+    val mutualFriends: StateFlow<List<Profile>> = _mutualFriends.asStateFlow()
+
+    /** How many distinct users viewed the profile being viewed. */
+    private val _profileViewCount = MutableStateFlow(0L)
+    val profileViewCount: StateFlow<Long> = _profileViewCount.asStateFlow()
+
+    /**
+     * What the viewer may see on someone's public profile.
+     * Sync fallback (old rule: public profile, or friend / pending request
+     * on a private one), same as PeopleScreen.canSeeDetails.
+     */
+    fun visibilityFor(profile: Profile, state: FriendState): Pair<Boolean, Boolean> {
+        val canSee = profile.isPublic ||
+            state == FriendState.FRIENDS ||
+            state == FriendState.PENDING_IN ||
+            state == FriendState.PENDING_OUT
+        return canSee to canSee
+    }
+
+    /**
+     * Privacy-checked visibility for a public profile (v3.1.0, worker A):
+     * (canSeeBio, canSeeLastSeen) from PrivacyRepository. Starts with the
+     * [visibilityFor] fallback, then replaces it when the check returns.
+     * Null until [loadVisibilityFor] is called.
+     */
+    private val _visibility = MutableStateFlow<Pair<Boolean, Boolean>?>(null)
+    val visibility: StateFlow<Pair<Boolean, Boolean>?> = _visibility.asStateFlow()
+
+    fun loadVisibilityFor(profile: Profile, state: FriendState) {
+        _visibility.value = visibilityFor(profile, state)
+        viewModelScope.launch {
+            try {
+                val bio = privacyRepo.canSeeBioOf(profile.id)
+                val lastSeen = privacyRepo.canSeeLastSeen(profile.id)
+                _visibility.value = bio to lastSeen
+            } catch (_: Exception) {
+                // Keep the fallback — privacy check is best-effort.
+            }
+        }
+    }
+
+    /** Load mutual friends + visitor count for a public profile. */
+    fun loadPublicProfile(userId: String) {
+        viewModelScope.launch {
+            _mutualFriends.value = try {
+                profileRepo.loadMutualFriends(userId)
+            } catch (e: Exception) {
+                emptyList()
+            }
+            _profileViewCount.value = try {
+                profileRepo.profileViewCount(userId)
+            } catch (e: Exception) {
+                0L
+            }
+        }
+    }
+
+    /**
+     * Record that I viewed this profile (ignored for my own profile,
+     * server-side) and refresh the visitor count. Best-effort.
+     */
+    fun recordProfileView(userId: String) {
+        viewModelScope.launch {
+            try {
+                profileRepo.recordProfileView(userId)
+                _profileViewCount.value = profileRepo.profileViewCount(userId)
+            } catch (e: Exception) {
+                // views are best-effort
+            }
+        }
+    }
+
+    /**
+     * Start an audio/video call to a friend from their public profile.
+     * Same path as ChatScreen: get-or-create the 1-to-1 conversation,
+     * then CallManager.startCall. The caller (screen) checks the mic /
+     * camera permission first. Errors go to [_error]; returns true when
+     * the call started. Only friends can be called — the RPC refuses
+     * non-friends, and the screen only shows the buttons to friends.
+     */
+    fun startCall(userId: String, kind: String) {
+        viewModelScope.launch {
+            try {
+                val peer = _users.value.firstOrNull { it.id == userId }
+                    ?: _friends.value.firstOrNull { it.id == userId }
+                    ?: profileRepo.getProfile(userId)
+                    ?: run { _error.value = "Could not load this profile."; return@launch }
+                val conversationId = chatRepo.getOrCreateConversation(userId)
+                val err = CallManager.startCall(peer, kind, conversationId)
+                if (err != null) _error.value = err
+            } catch (e: Exception) {
+                _error.value = AuthRepository.friendlyError(e)
+            }
+        }
+    }
 
     init {
         refresh()
