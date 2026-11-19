@@ -29,7 +29,8 @@
             </intent-filter>
         </activity>
 
-        <!-- FCM push (v2.0.0): receives message/call notifications. -->
+        <!-- FCM push (v3.0.0): receives message/call notifications. FCM only;
+             the data layer is Supabase. -->
         <service
             android:name=".data.PingChatMessagingService"
             android:exported="false">
