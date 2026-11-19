@@ -39,6 +39,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
 import com.mdhasibulislam.pingchat.data.CallManager
+import com.mdhasibulislam.pingchat.data.PingChatMessagingService
 import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.Supabase
@@ -65,10 +66,18 @@ class MainActivity : ComponentActivity() {
     // running); drained by the navigation effects below once handled.
     private val openChatIdState = mutableStateOf<String?>(null)
 
+    // Friend-request notification tap (v3.0.2): open the People tab, where
+    // pending requests sit at the top. Same cold-start / onNewIntent
+    // pattern as openChatIdState.
+    private val openFriendRequestsState = mutableStateOf(false)
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         intent.getStringExtra("conversationId")?.let { openChatIdState.value = it }
+        if (intent.getBooleanExtra(PingChatMessagingService.EXTRA_FRIEND_REQUEST, false)) {
+            openFriendRequestsState.value = true
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -77,11 +86,18 @@ class MainActivity : ComponentActivity() {
         // Notification tap / Open chat action carries the chat to open.
         intent.getStringExtra("conversationId")?.let { openChatIdState.value = it }
 
+        // Friend-request notification tap carries no chat — it opens People.
+        if (intent.getBooleanExtra(PingChatMessagingService.EXTRA_FRIEND_REQUEST, false)) {
+            openFriendRequestsState.value = true
+        }
+
         // Start the session BEFORE the first frame: GoTrue restores the
         // saved session asynchronously (isLoggedIn starts null and flips
         // when the session loads), so the app shows the splash until it
         // knows whether to open chats or the login screen (no login flash).
-        SessionManager.start()
+        // v3.0.2: pass the context so SessionManager can read Prefs
+        // (notifications toggle) and not re-save the FCM token while OFF.
+        SessionManager.start(applicationContext)
 
         // Native Google sign-in: the Google ID token is exchanged with
         // Supabase Auth (signInWith(IDToken)). The OAuth Web client ID is
@@ -171,6 +187,7 @@ class MainActivity : ComponentActivity() {
             // running (v2.0.8): onNewIntent sets openChatIdState, this
             // opens that chat.
             val openChatId by openChatIdState
+            val openFriendRequests by openFriendRequestsState
             LaunchedEffect(openChatId) {
                 if (isLoggedIn == true && openChatId != null &&
                     navController.currentDestination != null &&
@@ -278,7 +295,9 @@ class MainActivity : ComponentActivity() {
                                     darkTheme = enabled
                                     prefs.darkTheme = enabled
                                 },
-                                prefs = prefs
+                                prefs = prefs,
+                                openPeopleTab = openFriendRequests,
+                                onPeopleTabConsumed = { openFriendRequestsState.value = false }
                             )
                         }
                         composable("settings") {
