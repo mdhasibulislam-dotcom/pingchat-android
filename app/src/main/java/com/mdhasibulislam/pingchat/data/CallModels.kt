@@ -5,10 +5,10 @@ import kotlinx.serialization.Serializable
 
 /**
  * WebRTC call signaling payloads — the field names match the web app's
- * js/calls.js shapes, but the transport is Firestore (calls/{callId} doc +
- * candidates subcollection) in this Firebase app, so a native user can
- * only call another native user. Events: call-offer / call-answer /
- * ice-candidate / call-decline / call-end / call-cancel.
+ * js/calls.js shapes, but the transport is Realtime Broadcast (v3.0.0,
+ * channels calls:<userId>) so a native user can only call another native
+ * user. Events: call-offer / call-answer / ice-candidate / call-decline /
+ * call-end / call-cancel.
  */
 
 /** The caller, as sent in a call-offer (web: payload.from = {id, name}). */

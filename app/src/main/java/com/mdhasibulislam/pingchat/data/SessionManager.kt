@@ -3,11 +3,14 @@ package com.mdhasibulislam.pingchat.data
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
-import com.google.firebase.auth.FirebaseAuth
-import com.google.firebase.auth.FirebaseUser
-import com.google.firebase.firestore.ListenerRegistration
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.status.SessionStatus
+import io.github.jan.supabase.auth.user.UserInfo
+import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.realtime.RealtimeChannel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.flow.MutableSharedFlow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -15,24 +18,28 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asSharedFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
+
+/** The signed-in user, as the screens see it (uid + email). */
+data class SessionUser(val uid: String, val email: String?)
 
 /**
  * App-wide session state: the signed-in user, my profile, who is online,
  * and the global messages feed. Started once from MainActivity.
  *
- * Firebase version: AuthStateListener drives the session, presence is the
- * users/{uid}.online field (flipped on app foreground / background via
- * ProcessLifecycleOwner), online users come from a Firestore query, and
- * the feed tick comes from a listener on my conversations.
+ * Supabase version: GoTrue sessionStatus drives the session, presence is
+ * the Realtime "online" channel (plus the pingchat_profiles.online column,
+ * flipped on app foreground / background), and the feed tick comes from
+ * postgres-changes on pingchat_messages.
  */
 object SessionManager {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private val authRepo = AuthRepository()
+    private val chatRepo = ChatRepository()
 
-    private val _user = MutableStateFlow<FirebaseUser?>(null)
-    val user: StateFlow<FirebaseUser?> = _user.asStateFlow()
+    private val _user = MutableStateFlow<SessionUser?>(null)
+    val user: StateFlow<SessionUser?> = _user.asStateFlow()
 
     /**
      * Tri-state login flag for navigation: null while the saved session is
@@ -51,50 +58,55 @@ object SessionManager {
     private val _feedTick = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val feedTick: SharedFlow<Unit> = _feedTick.asSharedFlow()
 
-    private var authListener: FirebaseAuth.AuthStateListener? = null
-    private var onlineListener: ListenerRegistration? = null
-    private var feedListener: ListenerRegistration? = null
+    private var presenceChannel: RealtimeChannel? = null
+    private var feedChannel: RealtimeChannel? = null
+    private var presenceJob: Job? = null
+    private var feedJob: Job? = null
     private var presenceObserver: DefaultLifecycleObserver? = null
     private var started = false
 
     fun start() {
         if (started) return
         started = true
-        val listener = FirebaseAuth.AuthStateListener { auth ->
-            val firebaseUser = auth.currentUser
-            if (firebaseUser != null) {
-                _isLoggedIn.value = true
-                scope.launch { onSignedIn(firebaseUser) }
-            } else {
+        scope.launch {
+            try {
+                Supabase.client.auth.sessionStatus.collect { status ->
+                    when (status) {
+                        is SessionStatus.Authenticated -> {
+                            _isLoggedIn.value = true
+                            status.session.user?.let { onSignedIn(it) }
+                        }
+                        is SessionStatus.NotAuthenticated,
+                        is SessionStatus.RefreshFailure -> {
+                            _isLoggedIn.value = false
+                            onSignedOut()
+                        }
+                        // Initializing / refreshing — keep the previous value.
+                        else -> Unit
+                    }
+                }
+            } catch (e: Exception) {
+                // The client could not start (e.g. no network engine) — stay on
+                // the login screen instead of crashing the app at launch.
                 _isLoggedIn.value = false
-                scope.launch { onSignedOut() }
             }
-        }
-        authListener = listener
-        FirebaseDb.auth.addAuthStateListener(listener)
-        // First emission: Firebase restores the saved session before the
-        // listener fires; until then isLoggedIn stays null (loading).
-        val current = FirebaseDb.auth.currentUser
-        if (current != null) {
-            _isLoggedIn.value = true
-            scope.launch { onSignedIn(current) }
         }
     }
 
-    private suspend fun onSignedIn(user: FirebaseUser) {
-        if (_user.value?.uid == user.uid && _profile.value != null) return
-        _user.value = user
+    private suspend fun onSignedIn(user: UserInfo) {
+        if (_user.value?.uid == user.id && _profile.value != null) return
+        _user.value = SessionUser(user.id, user.email)
         val profile = try {
             authRepo.ensureProfile(user)
         } catch (e: Exception) {
             null
         }
         _profile.value = profile
-        setOnline(user.uid, true)
-        saveFcmToken(user.uid)
-        startPresenceObserver(user.uid)
-        startOnlineListener()
-        startFeedListener(user.uid)
+        setOnline(user.id, true)
+        saveFcmToken(user.id)
+        startPresenceObserver(user.id)
+        startPresence(user, profile?.fullName ?: "")
+        startFeed()
     }
 
     private suspend fun onSignedOut() {
@@ -103,8 +115,8 @@ object SessionManager {
             setOnline(uid, false)
         }
         stopPresenceObserver()
-        stopOnlineListener()
-        stopFeedListener()
+        stopPresence()
+        stopFeed()
         if (_user.value == null && _profile.value == null) return
         _isLoggedIn.value = false
         _user.value = null
@@ -112,16 +124,15 @@ object SessionManager {
         _onlineIds.value = emptySet()
     }
 
-    /** users/{uid}.online = true/false (+ lastSeen when going offline). */
+    /** pingchat_profiles.online = true/false (+ last_seen when going offline). */
     private suspend fun setOnline(uid: String, online: Boolean) {
         try {
-            val data = if (online) {
-                mapOf<String, Any?>("online" to true)
-            } else {
-                mapOf<String, Any?>("online" to false, "lastSeen" to nowMillis())
+            Supabase.client.from("pingchat_profiles").update({
+                set("online", online)
+                if (!online) set("last_seen", nowIso())
+            }) {
+                filter { eq("id", uid) }
             }
-            FirebaseDb.db.collection("users").document(uid)
-                .set(data, com.google.firebase.firestore.SetOptions.merge()).await()
         } catch (e: Exception) {
             // presence is best-effort
         }
@@ -130,18 +141,18 @@ object SessionManager {
     /** Save this device's FCM token on my profile (best-effort, never blocks auth). */
     private suspend fun saveFcmToken(uid: String) {
         try {
-            val token = FirebaseDb.messaging.token.await()
-            FirebaseDb.db.collection("users").document(uid)
-                .set(
-                    mapOf<String, Any?>("fcmToken" to token),
-                    com.google.firebase.firestore.SetOptions.merge()
-                ).await()
+            val token = Supabase.fcmToken() ?: return
+            Supabase.client.from("pingchat_profiles").update({
+                set("fcm_token", token)
+            }) {
+                filter { eq("id", uid) }
+            }
         } catch (e: Exception) {
             // push token is best-effort
         }
     }
 
-    /** Flip presence when the app goes to the foreground / background. */
+    /** Flip the online column when the app goes to the foreground / background. */
     private fun startPresenceObserver(uid: String) {
         stopPresenceObserver()
         val observer = object : DefaultLifecycleObserver {
@@ -166,36 +177,88 @@ object SessionManager {
         }
     }
 
-    /** Live set of online user ids (any user with online == true). */
-    private fun startOnlineListener() {
-        stopOnlineListener()
-        onlineListener = FirebaseDb.db.collection("users")
-            .whereEqualTo("online", true)
-            .addSnapshotListener { snap, _ ->
-                if (snap != null) {
-                    _onlineIds.value = snap.documents.map { it.id }.toSet()
+    /** Live set of online user ids (Realtime presence on the "online" channel). */
+    private fun startPresence(user: UserInfo, name: String) {
+        stopPresence()
+        scope.launch {
+            val channel = try {
+                chatRepo.presenceChannel(user.id)
+            } catch (e: Exception) {
+                return@launch
+            }
+            presenceChannel = channel
+            presenceJob = scope.launch {
+                try {
+                    chatRepo.presenceFlow(channel).collect { (joined, left) ->
+                        _onlineIds.update { it + joined - left }
+                    }
+                } catch (e: Exception) {
+                    // presence is best-effort
                 }
             }
-    }
-
-    private fun stopOnlineListener() {
-        onlineListener?.remove()
-        onlineListener = null
-    }
-
-    /** Any change to one of my conversations pokes the chats list + open chat. */
-    private fun startFeedListener(uid: String) {
-        stopFeedListener()
-        feedListener = FirebaseDb.db.collection("conversations")
-            .whereArrayContains("participants", uid)
-            .addSnapshotListener { _, _ ->
-                _feedTick.tryEmit(Unit)
+            try {
+                chatRepo.trackPresence(channel, PresenceState(user.id, name))
+            } catch (e: Exception) {
+                // offline — presence stays empty
             }
+        }
     }
 
-    private fun stopFeedListener() {
-        feedListener?.remove()
-        feedListener = null
+    private fun stopPresence() {
+        presenceJob?.cancel()
+        presenceJob = null
+        presenceChannel = null
+        scope.launch {
+            try {
+                chatRepo.dropChannel("online")
+            } catch (e: Exception) {
+            }
+        }
+    }
+
+    /** Any change to pingchat_messages pokes the chats list + open chat. */
+    private fun startFeed() {
+        stopFeed()
+        scope.launch {
+            val channel = try {
+                chatRepo.messagesFeedChannel()
+            } catch (e: Exception) {
+                return@launch
+            }
+            feedChannel = channel
+            feedJob = scope.launch {
+                launch {
+                    try {
+                        chatRepo.messagesInsertFlow(channel).collect { _feedTick.tryEmit(Unit) }
+                    } catch (e: Exception) {
+                    }
+                }
+                launch {
+                    try {
+                        chatRepo.messagesUpdateFlow(channel).collect { _feedTick.tryEmit(Unit) }
+                    } catch (e: Exception) {
+                    }
+                }
+                launch {
+                    try {
+                        chatRepo.messagesDeleteFlow(channel).collect { _feedTick.tryEmit(Unit) }
+                    } catch (e: Exception) {
+                    }
+                }
+            }
+        }
+    }
+
+    private fun stopFeed() {
+        feedJob?.cancel()
+        feedJob = null
+        feedChannel = null
+        scope.launch {
+            try {
+                chatRepo.dropChannel("messages-feed")
+            } catch (e: Exception) {
+            }
+        }
     }
 
     /** Update my cached profile (e.g. after editing it). */

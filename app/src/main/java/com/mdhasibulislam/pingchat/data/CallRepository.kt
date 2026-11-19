@@ -1,38 +1,42 @@
 package com.mdhasibulislam.pingchat.data
 
-import com.google.firebase.firestore.DocumentChange
-import com.google.firebase.firestore.SetOptions
-import kotlinx.coroutines.channels.awaitClose
+import io.github.jan.supabase.annotations.SupabaseInternal
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.realtime.RealtimeChannel
+import io.github.jan.supabase.realtime.broadcast
+import io.github.jan.supabase.realtime.broadcastFlow
+import io.github.jan.supabase.realtime.channel
+import io.github.jan.supabase.realtime.realtime
+import java.time.Instant
 import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.flow.filter
+import kotlinx.coroutines.flow.flow
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.withTimeoutOrNull
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
- * Calls: the `calls` collection + Firestore signaling (v2.0.0).
+ * Calls: the `pingchat_calls` table (call history + status) + Realtime
+ * Broadcast signaling (v3.0.0).
  *
- * Layout:
- * - calls/{callId}: callerId, calleeId, conversationId, kind (audio/video),
- *   status (ringing/accepted/declined/missed/ended), callerName,
- *   offerSdp {type, sdp}, answerSdp {type, sdp}, createdAt, startedAt,
- *   endedAt, durationSeconds (millis timestamps),
- *   participants [callerId, calleeId] (denormalized for the candidates
- *   listener — the Firestore rules cannot use get() on the parent call
- *   during a list query, so membership must live on each document)
- * - calls/{callId}/candidates/{autoId}: senderId, candidate, sdpMid,
- *   sdpMLineIndex, participants [callerId, calleeId] (same reason)
+ * Signaling runs on channels `calls:<userId>` — I receive call-offer /
+ * call-answer / ice-candidate / call-decline / call-end on MY channel, and
+ * send each signal to the PEER's channel. There is no document that must
+ * exist first, so the v2 M3 bug (the caller's first ICE candidates lost
+ * while the call doc did not exist yet) cannot happen: the peer channel is
+ * subscribed before the first candidate is sent.
  *
- * The callee watches calls where calleeId == me for ringing docs (incoming
- * calls); the caller watches the one call doc for the answer + status, and
- * the candidates subcollection for the peer's ICE candidates. WebRTC media
- * (PeerConnection, OpenRelay TURN) is unchanged from v1.0.5.
- *
- * NOTE: this is a separate Firebase system from the web app — native users
- * can only call other native (Firebase) users, not web users.
+ * The calls row is still written (ringing + offer SDP, then status
+ * updates) so call history exists and so a callee whose app was closed
+ * can still find a ringing call when it opens (see incomingOfferFlow).
  */
 class CallRepository {
-    private val db get() = FirebaseDb.db
+    private val client get() = Supabase.client
 
-    fun myId(): String? = FirebaseDb.auth.currentUser?.uid
+    fun myId(): String? = client.auth.currentUserOrNull()?.id
 
     companion object {
         /** 30s ring, then the call is marked missed. */
@@ -61,9 +65,20 @@ class CallRepository {
     /** One ICE server entry (urls + optional TURN username/credential). */
     data class IceServer(val urls: String, val username: String? = null, val credential: String? = null)
 
-    // ---------- calls collection ----------
+    /** callId -> peer user id, so signals know where to go. */
+    private val callPeers = mutableMapOf<String, String>()
 
-    /** Create the ringing call doc with the caller's SDP offer. */
+    /** Remember the peer for a call before the first ICE candidate exists (M3). */
+    fun setCallPeer(callId: String, peerId: String) {
+        callPeers[callId] = peerId
+    }
+
+    // ---------- calls table ----------
+
+    /**
+     * Create the ringing call row with the caller's SDP offer, then
+     * broadcast the offer to the callee. Returns the row (null on failure).
+     */
     suspend fun insertCall(
         callId: String,
         conversationId: String?,
@@ -73,33 +88,52 @@ class CallRepository {
         callerName: String,
         offer: SdpJson
     ): CallRow? {
-        return try {
-            val data = mutableMapOf<String, Any?>(
-                "callerId" to callerId,
-                "calleeId" to calleeId,
-                "conversationId" to conversationId,
-                "kind" to kind,
-                "status" to "ringing",
-                "callerName" to callerName,
-                "offerSdp" to mapOf("type" to offer.type, "sdp" to offer.sdp),
-                "answerSdp" to null,
-                "createdAt" to nowMillis(),
-                "startedAt" to null,
-                "endedAt" to null,
-                "durationSeconds" to null,
-                "participants" to listOf(callerId, calleeId)
-            )
-            db.collection("calls").document(callId).set(data).await()
-            callRowFromDoc(callId, data)
+        callPeers[callId] = calleeId
+        val row = try {
+            client.from("pingchat_calls").insert(
+                buildJsonObject {
+                    put("id", callId)
+                    if (conversationId != null) put("conversation_id", conversationId)
+                    put("caller_id", callerId)
+                    put("callee_id", calleeId)
+                    put("caller_name", callerName)
+                    put("kind", kind)
+                    put("status", "ringing")
+                    put("offer_sdp", buildJsonObject {
+                        put("type", offer.type)
+                        put("sdp", offer.sdp)
+                    })
+                }
+            ) { select() }.decodeSingleOrNull<CallRow>()
         } catch (e: Exception) {
             null
         }
+        if (row != null) {
+            // Ring the callee even if their app is open: the broadcast is
+            // the live offer. (The FCM push in CallManager covers a
+            // closed app; the sweep in incomingOfferFlow covers the rest.)
+            sendToPeer(
+                calleeId,
+                "call-offer",
+                CallOfferPayload(
+                    callId = callId,
+                    conversationId = conversationId,
+                    from = CallPeerInfo(callerId, callerName),
+                    kind = kind,
+                    sdp = offer
+                )
+            )
+        }
+        return row
     }
 
     private suspend fun updateCall(callId: String, patch: Map<String, Any?>) {
         try {
-            db.collection("calls").document(callId)
-                .set(patch, SetOptions.merge()).await()
+            client.from("pingchat_calls").update({
+                patch.forEach { (key, value) -> set(key, value) }
+            }) {
+                filter { eq("id", callId) }
+            }
         } catch (e: Exception) {
             // call history is best-effort; the call itself still works
         }
@@ -107,7 +141,7 @@ class CallRepository {
 
     /** Callee accepted: status accepted + started_at. */
     suspend fun markAccepted(callId: String) {
-        updateCall(callId, mapOf("status" to "accepted", "startedAt" to nowMillis()))
+        updateCall(callId, mapOf("status" to "accepted", "started_at" to Instant.now().toString()))
     }
 
     /** Call declined (manual decline, or the busy auto-decline). */
@@ -124,214 +158,226 @@ class CallRepository {
     suspend fun markEnded(callId: String, durationSeconds: Int?) {
         val patch = mutableMapOf<String, Any?>(
             "status" to "ended",
-            "endedAt" to nowMillis()
+            "ended_at" to Instant.now().toString()
         )
-        if (durationSeconds != null) patch["durationSeconds"] = durationSeconds.toLong()
+        if (durationSeconds != null) patch["duration_seconds"] = durationSeconds
         updateCall(callId, patch)
     }
 
     /** The other side's profile (for the incoming-call screen). */
     suspend fun loadProfile(userId: String): Profile? {
         return try {
-            val snap = db.collection("users").document(userId).get().await()
-            if (!snap.exists()) null else profileFromDoc(userId, snap.data ?: emptyMap())
+            client.from("pingchat_profiles").select {
+                filter { eq("id", userId) }
+            }.decodeSingleOrNull<Profile>()
         } catch (e: Exception) {
             null
         }
     }
 
-    // ---------- signaling transport (Firestore) ----------
+    // ---------- signaling transport (Realtime Broadcast) ----------
 
-    /** Callee: the callee's SDP answer for one call. */
-    suspend fun sendAnswer(callId: String, answer: SdpJson) {
-        try {
-            db.collection("calls").document(callId).set(
-                mapOf("answerSdp" to mapOf("type" to answer.type, "sdp" to answer.sdp)),
-                SetOptions.merge()
-            ).await()
-        } catch (e: Exception) {
-            throw e
+    /** My own channel: I receive call-offer/answer/candidates on `calls:<myId>`. */
+    private suspend fun myChannel(): RealtimeChannel? {
+        val me = myId() ?: return null
+        val name = "calls:$me"
+        val channel = RealtimeChannels.get(name) {
+            client.realtime.channel(name)
         }
+        RealtimeChannels.ensureSubscribed(name)
+        return channel
     }
 
     /**
-     * The call's participants, cached per call. Candidate docs carry a
-     * denormalized `participants` array (the Firestore rules cannot use
-     * get() on the parent call during a list query, so membership must
-     * live on each document itself).
+     * The peer's channel, subscribed before use. subscribe() waits until
+     * the channel is joined (or fails) so the first signals are not lost
+     * on a fresh channel. A failed channel is never cached.
      */
-    private val participantsCache = mutableMapOf<String, List<String>>()
-
-    private suspend fun participantsForCall(callId: String): List<String> {
-        participantsCache[callId]?.let { return it }
-        return try {
-            val snap = db.collection("calls").document(callId).get().await()
-            val caller = snap.getString("callerId")
-            val callee = snap.getString("calleeId")
-            val list = listOfNotNull(caller, callee)
-            if (list.size == 2) participantsCache[callId] = list
-            list
-        } catch (e: Exception) {
-            emptyList()
+    private suspend fun peerChannel(peerId: String): RealtimeChannel? {
+        val name = "calls:$peerId"
+        val channel = RealtimeChannels.get(name) {
+            client.realtime.channel(name)
         }
+        val ok = withTimeoutOrNull(10_000) {
+            try {
+                RealtimeChannels.ensureSubscribed(name)
+                true
+            } catch (e: Exception) {
+                false
+            }
+        } ?: false
+        if (!ok) {
+            RealtimeChannels.drop(name)
+            return null
+        }
+        return channel
     }
 
-    /** One ICE candidate for the peer (goes to the candidates subcollection). */
+    /**
+     * Send one signal to the peer. On failure the cached channel is dropped
+     * and retried once on a fresh channel (a mobile connection drop can
+     * leave a dead cached channel); returns false only if both fail.
+     */
+    private suspend fun sendToPeer(peerId: String, event: String, payload: Any): Boolean {
+        suspend fun attempt(): Boolean {
+            val channel = peerChannel(peerId) ?: return false
+            return try {
+                when (payload) {
+                    is CallOfferPayload -> channel.broadcast(event, payload)
+                    is CallAnswerPayload -> channel.broadcast(event, payload)
+                    is IceCandidatePayload -> channel.broadcast(event, payload)
+                    is CallSignalPayload -> channel.broadcast(event, payload)
+                    else -> return false
+                }
+                true
+            } catch (e: Exception) {
+                false
+            }
+        }
+        if (attempt()) return true
+        RealtimeChannels.drop("calls:$peerId")
+        return attempt()
+    }
+
+    /** Callee: the callee's SDP answer for one call. Returns false when it could not be sent. */
+    suspend fun sendAnswer(callId: String, answer: SdpJson): Boolean {
+        val peerId = callPeers[callId] ?: return false
+        // Save the answer on the call row too (call history), best-effort.
+        try {
+            client.from("pingchat_calls").update({
+                set("answer_sdp", buildJsonObject {
+                    put("type", answer.type)
+                    put("sdp", answer.sdp)
+                })
+            }) {
+                filter { eq("id", callId) }
+            }
+        } catch (e: Exception) {
+        }
+        return sendToPeer(peerId, "call-answer", CallAnswerPayload(callId, answer))
+    }
+
+    /** One ICE candidate for the peer (broadcast — no document needed, M3). */
     suspend fun sendCandidate(callId: String, candidate: IceCandidateJson) {
-        val me = myId() ?: return
-        try {
-            db.collection("calls").document(callId).collection("candidates").add(
-                mapOf(
-                    "senderId" to me,
-                    "candidate" to candidate.candidate,
-                    "sdpMid" to candidate.sdpMid,
-                    "sdpMLineIndex" to candidate.sdpMLineIndex,
-                    "participants" to participantsForCall(callId)
-                )
-            ).await()
-        } catch (e: Exception) {
-            // candidates are best-effort; the call may still connect
-        }
+        val peerId = callPeers[callId] ?: return
+        sendToPeer(peerId, "ice-candidate", IceCandidatePayload(callId, candidate))
     }
 
-    /** Tell the other side the call ended/declined (status on the call doc). */
+    /** Tell the other side the call ended/declined (broadcast + row status). */
     suspend fun sendCallEnd(callId: String, status: String) {
+        val peerId = callPeers[callId]
+        if (peerId != null) {
+            val event = if (status == "declined") "call-decline" else "call-end"
+            sendToPeer(peerId, event, CallSignalPayload(callId))
+        }
         try {
-            db.collection("calls").document(callId).set(
-                mapOf("status" to status),
-                SetOptions.merge()
-            ).await()
+            client.from("pingchat_calls").update({
+                set("status", status)
+            }) {
+                filter { eq("id", callId) }
+            }
         } catch (e: Exception) {
             // best-effort; markEnded/markDeclined also writes the status
         }
     }
 
-    // ---------- incoming-signal flows ----------
+    /** Drop every call channel (sign-out). */
+    suspend fun closeChannels() {
+        RealtimeChannels.dropPrefix("calls:")
+        callPeers.clear()
+    }
 
-    /** Ringing calls for me (callee side). Emits one offer per new call doc. */
-    fun incomingOfferFlow(): Flow<CallOfferPayload> = callbackFlow {
+    // ---------- incoming-signal flows on my own channel ----------
+
+    /**
+     * Ringing calls for me (callee side). Emits one offer per new call.
+     * Broadcasts arrive live; the sweep below also catches a call that
+     * started while this app was closed (push tap opens the app after the
+     * broadcast already went out) — any still-ringing row for me from the
+     * last 60 seconds is emitted once when collection starts.
+     */
+    @OptIn(SupabaseInternal::class)
+    fun incomingOfferFlow(): Flow<CallOfferPayload> = flow {
         val me = myId()
-        if (me == null) {
-            close()
-            return@callbackFlow
-        }
-        val reg = db.collection("calls")
-            .whereEqualTo("calleeId", me)
-            .addSnapshotListener { snap, _ ->
-                snap?.documentChanges?.forEach { change ->
-                    if (change.type != DocumentChange.Type.ADDED) return@forEach
-                    val data = change.document.data
-                    if (data["status"] as? String != "ringing") return@forEach
-                    val offer = sdpFromMap(data["offerSdp"]) ?: return@forEach
-                    trySend(
+        if (me != null) {
+            try {
+                val cutoff = Instant.now().minusSeconds(60).toString()
+                val ringing = client.from("pingchat_calls").select {
+                    filter {
+                        eq("callee_id", me)
+                        eq("status", "ringing")
+                        gt("created_at", cutoff)
+                    }
+                }.decodeList<CallRow>()
+                ringing.forEach { row ->
+                    val offer = row.offerSdp ?: return@forEach
+                    callPeers[row.id] = row.callerId
+                    emit(
                         CallOfferPayload(
-                            callId = change.document.id,
-                            conversationId = data["conversationId"] as? String,
-                            from = CallPeerInfo(
-                                data["callerId"] as? String ?: "",
-                                data["callerName"] as? String ?: ""
-                            ),
-                            kind = data["kind"] as? String ?: "audio",
+                            callId = row.id,
+                            conversationId = row.conversationId,
+                            from = CallPeerInfo(row.callerId, row.callerName ?: ""),
+                            kind = row.kind,
                             sdp = offer
                         )
                     )
                 }
+            } catch (e: Exception) {
+                // sweep is best-effort; live broadcasts still work
             }
-        awaitClose { reg.remove() }
+        }
+        val channel = myChannel() ?: return@flow
+        channel.broadcastFlow<CallOfferPayload>("call-offer").collect { payload ->
+            callPeers[payload.callId] = payload.from.id
+            emit(payload)
+        }
     }
 
     /**
      * A ringing call that went away (caller hung up / call ended while we
      * were still ringing). Emits the call id to dismiss the dialog.
      */
-    fun incomingCancelFlow(): Flow<CallSignalPayload> = callbackFlow {
-        val me = myId()
-        if (me == null) {
-            close()
-            return@callbackFlow
-        }
-        val reg = db.collection("calls")
-            .whereEqualTo("calleeId", me)
-            .addSnapshotListener { snap, _ ->
-                snap?.documentChanges?.forEach { change ->
-                    val data = change.document.data
-                    val status = data["status"] as? String
-                    if (change.type == DocumentChange.Type.REMOVED ||
-                        (change.type == DocumentChange.Type.MODIFIED && status != "ringing")
-                    ) {
-                        trySend(CallSignalPayload(change.document.id))
-                    }
-                }
-            }
-        awaitClose { reg.remove() }
+    @OptIn(SupabaseInternal::class)
+    fun incomingCancelFlow(): Flow<CallSignalPayload> = flow {
+        val channel = myChannel() ?: return@flow
+        merge(
+            channel.broadcastFlow<CallSignalPayload>("call-cancel"),
+            channel.broadcastFlow<CallSignalPayload>("call-end")
+        ).collect { emit(it) }
     }
 
-    /** The callee's SDP answer for one call (caller side). Emits once. */
-    fun answerFlow(callId: String): Flow<CallAnswerPayload> = callbackFlow {
-        var emitted = false
-        val reg = db.collection("calls").document(callId)
-            .addSnapshotListener { snap, _ ->
-                if (snap == null || !snap.exists() || emitted) return@addSnapshotListener
-                val answer = sdpFromMap(snap.get("answerSdp")) ?: return@addSnapshotListener
-                emitted = true
-                trySend(CallAnswerPayload(callId, answer))
-            }
-        awaitClose { reg.remove() }
+    /** The callee's SDP answer for one call (caller side). */
+    @OptIn(SupabaseInternal::class)
+    fun answerFlow(callId: String): Flow<CallAnswerPayload> = flow {
+        val channel = myChannel() ?: return@flow
+        channel.broadcastFlow<CallAnswerPayload>("call-answer")
+            .filter { it.callId == callId }
+            .collect { emit(it) }
     }
 
     /**
      * Terminal status of one call (caller side): emits "declined" or
-     * "ended" once the doc reaches that status.
+     * "ended" once the peer sends it.
      */
-    fun callStatusFlow(callId: String): Flow<String> = callbackFlow {
-        var lastStatus: String? = null
-        val reg = db.collection("calls").document(callId)
-            .addSnapshotListener { snap, _ ->
-                if (snap == null || !snap.exists()) return@addSnapshotListener
-                val status = snap.getString("status") ?: return@addSnapshotListener
-                if ((status == "declined" || status == "ended") && status != lastStatus) {
-                    lastStatus = status
-                    trySend(status)
-                }
-            }
-        awaitClose { reg.remove() }
+    @OptIn(SupabaseInternal::class)
+    fun callStatusFlow(callId: String): Flow<String> = flow {
+        val channel = myChannel() ?: return@flow
+        merge(
+            channel.broadcastFlow<CallSignalPayload>("call-decline")
+                .map { "declined" to it.callId },
+            channel.broadcastFlow<CallSignalPayload>("call-end")
+                .map { "ended" to it.callId }
+        ).filter { (_, id) -> id == callId }
+            .map { (status, _) -> status }
+            .collect { emit(it) }
     }
 
     /** The peer's ICE candidates for one call, in arrival order. */
-    fun candidatesFlow(callId: String, peerId: String): Flow<IceCandidatePayload> = callbackFlow {
-        val me = myId() ?: run { close(); return@callbackFlow }
-        // Only the participants filter lives in the query (single field,
-        // auto-indexed); the sender is filtered client-side below so no
-        // composite index is needed.
-        val reg = db.collection("calls").document(callId)
-            .collection("candidates")
-            .whereArrayContains("participants", me)
-            .addSnapshotListener { snap, _ ->
-                snap?.documentChanges?.forEach { change ->
-                    if (change.type != DocumentChange.Type.ADDED) return@forEach
-                    val data = change.document.data
-                    if (data["senderId"] as? String != peerId) return@forEach
-                    val candidate = data["candidate"] as? String ?: return@forEach
-                    trySend(
-                        IceCandidatePayload(
-                            callId,
-                            IceCandidateJson(
-                                candidate = candidate,
-                                sdpMid = data["sdpMid"] as? String,
-                                sdpMLineIndex = (data["sdpMLineIndex"] as? Long)?.toInt() ?: 0
-                            )
-                        )
-                    )
-                }
-            }
-        awaitClose { reg.remove() }
-    }
-
-    @Suppress("UNCHECKED_CAST")
-    private fun sdpFromMap(value: Any?): SdpJson? {
-        val map = value as? Map<String, Any?> ?: return null
-        val type = map["type"] as? String ?: return null
-        val sdp = map["sdp"] as? String ?: return null
-        return SdpJson(type, sdp)
+    @OptIn(SupabaseInternal::class)
+    fun candidatesFlow(callId: String, peerId: String): Flow<IceCandidatePayload> = flow {
+        val channel = myChannel() ?: return@flow
+        channel.broadcastFlow<IceCandidatePayload>("ice-candidate")
+            .filter { it.callId == callId }
+            .collect { emit(it) }
     }
 }

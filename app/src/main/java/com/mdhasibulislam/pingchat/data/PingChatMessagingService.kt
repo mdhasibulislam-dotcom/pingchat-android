@@ -14,15 +14,14 @@ import com.mdhasibulislam.pingchat.MainActivity
 import com.mdhasibulislam.pingchat.R
 
 /**
- * Push notifications, straight from Firebase Cloud Messaging (v2.0.0 —
- * no third-party push SDK). The FCM token is saved to users/{uid}.fcmToken by
- * SessionManager on sign-in.
+ * Push notifications, straight from Firebase Cloud Messaging (v3.0.0 —
+ * FCM receive only; the data layer is Supabase). The FCM token is saved
+ * to pingchat_profiles.fcm_token by SessionManager on sign-in.
  *
- * Server-side sending needs a Cloud Function (or the Firebase console):
- * send a data message with title, body, type ("message" or "call") and
- * conversationId, and this service shows it as a notification that opens
- * the app. Until a sender exists, this service simply never fires — the
- * app works fine without it.
+ * Sending goes through the Supabase Edge Function `send-push` (see
+ * PushSender.kt): it sends a data message with title, body, type
+ * ("message" or "call") and conversationId, and this service shows it as
+ * a notification that opens the app.
  *
  * v2.0.8 style (Hasibul's choice): the app logo as the notification
  * image, a Reply action that answers from the notification bar itself

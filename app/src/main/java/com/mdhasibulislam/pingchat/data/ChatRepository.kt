@@ -1,145 +1,125 @@
 package com.mdhasibulislam.pingchat.data
 
-import com.google.firebase.firestore.FieldValue
-import com.google.firebase.firestore.SetOptions
-import com.google.firebase.storage.StorageMetadata
+import io.github.jan.supabase.annotations.SupabaseInternal
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.postgrest
+import io.github.jan.supabase.postgrest.query.Columns
+import io.github.jan.supabase.postgrest.query.Order
+import io.github.jan.supabase.realtime.PostgresAction
+import io.github.jan.supabase.realtime.RealtimeChannel
+import io.github.jan.supabase.realtime.broadcast
+import io.github.jan.supabase.realtime.broadcastFlow
+import io.github.jan.supabase.realtime.channel
+import io.github.jan.supabase.realtime.decodeRecord
+import io.github.jan.supabase.realtime.postgresChangeFlow
+import io.github.jan.supabase.realtime.presenceChangeFlow
+import io.github.jan.supabase.realtime.realtime
+import io.github.jan.supabase.realtime.track
+import io.github.jan.supabase.storage.storage
+import io.ktor.http.ContentType
+import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
  * Chats list, messages, read ticks, typing, reactions, deletes — on
- * Firestore (v2.0.0).
+ * Supabase (v3.0.0).
  *
- * Layout:
- * - conversations/{pairId}: participants [uid, uid], lastMessage,
- *   lastMessageAt (millis), lastMessageKind, lastReadAt {uid: millis}
- * - conversations/{pairId}/messages/{msgId}: senderId, body, kind
- *   (text/voice/photo), mediaUrl, mediaPath, viewOnce, consumedAt,
- *   replyToId, deletedBy [uid], reactions {uid: emoji}, createdAtMillis,
- *   participants [uid, uid] (denormalized: the Firestore rules cannot
- *   use get() to check the parent conversation during a list query —
- *   "rules are not filters" — so every message carries its participants
- *   and every messages query filters whereArrayContains("participants", me))
- * - conversations/{pairId}/typing/{uid}: userId, name, updatedAt,
- *   participants [uid, uid] (same reason as messages)
+ * Layout (all tables prefixed pingchat_ — the project is shared with the
+ * MCQ exam app):
+ * - pingchat_conversations: last_message, last_message_at, last_message_kind,
+ *   last_message_id, last_sender_id (denormalized preview, refreshed on send)
+ * - pingchat_conversation_participants: conversation_id, user_id, last_read_at
+ * - pingchat_messages: sender_id, body, kind (text/voice/photo), reply_to_id,
+ *   media_url, media_path, view_once, consumed_at, deleted_by [uuid]
+ * - pingchat_message_reactions: message_id, user_id, emoji (one row per user)
+ * - Typing + presence are Realtime Broadcast / Presence — no tables.
  *
- * Timestamps are epoch millis in Firestore; the models keep ISO strings,
- * so TimeFormat / tick logic works unchanged. Conversations are sorted
- * client-side, and so are messages: every query uses a single field
- * (whereArrayContains) with NO orderBy, so NO composite index is needed
- * at all — sorting runs client-side after the fetch. The chat-list
- * preview comes from the denormalized lastMessage* fields on the
- * conversation doc itself (see updateConversationPreview).
+ * Timestamps are ISO strings in Postgres; the models keep ISO strings, so
+ * TimeFormat / tick logic works unchanged. Conversations and messages are
+ * sorted client-side where the query cannot order (all sorting runs after
+ * the fetch, same as v2.0.3).
  */
 class ChatRepository {
-    private val db get() = FirebaseDb.db
-    private val storage get() = FirebaseDb.storage
+    private val client get() = Supabase.client
 
-    fun myId(): String? = FirebaseDb.auth.currentUser?.uid
-
-    private fun conversationsRef() = db.collection("conversations")
-    private fun messagesRef(conversationId: String) =
-        conversationsRef().document(conversationId).collection("messages")
-
-    /**
-     * The conversation's participants, cached per conversation. Messages
-     * and typing docs carry a denormalized `participants` array (the
-     * Firestore rules cannot use get() on the parent conversation during
-     * a list query, so membership must live on each document itself).
-     */
-    private val participantsCache = mutableMapOf<String, List<String>>()
-
-    private suspend fun participantsFor(conversationId: String): List<String> {
-        participantsCache[conversationId]?.let { return it }
-        return try {
-            val snap = conversationsRef().document(conversationId).get().await()
-            @Suppress("UNCHECKED_CAST")
-            val list = (snap.data?.get("participants") as? List<*>)
-                ?.mapNotNull { it as? String } ?: emptyList()
-            if (list.isNotEmpty()) participantsCache[conversationId] = list
-            list
-        } catch (e: Exception) {
-            emptyList()
-        }
-    }
+    fun myId(): String? = client.auth.currentUserOrNull()?.id
 
     /** Load all 1-to-1 conversations for the signed-in user, newest first. */
     suspend fun loadConversations(): List<ConversationItem> {
         val me = myId() ?: return emptyList()
-        val snap = conversationsRef()
-            .whereArrayContains("participants", me)
-            .get()
-            .await()
-        val convs = snap.documents
-            .map { conversationFromDoc(it.id, it.data ?: emptyMap()) to (it.data ?: emptyMap()) }
-            .sortedByDescending { (it.second["lastMessageAt"] as? Long) ?: 0L }
-        if (convs.isEmpty()) return emptyList()
 
-        return convs.mapNotNull { (conv, data) ->
-            @Suppress("UNCHECKED_CAST")
-            val participants = (data["participants"] as? List<*>)?.mapNotNull { it as? String }
+        val myParts = client.from("pingchat_conversation_participants").select {
+            filter { eq("user_id", me) }
+        }.decodeList<Participant>()
+        if (myParts.isEmpty()) return emptyList()
+
+        val convIds = myParts.map { it.conversationId }
+        val myRead = myParts.associate { it.conversationId to it.lastReadAt }
+
+        val convs = client.from("pingchat_conversations").select {
+            filter { isIn("id", convIds) }
+            order("last_message_at", Order.DESCENDING)
+        }.decodeList<Conversation>()
+
+        val others = client.from("pingchat_conversation_participants").select {
+            filter {
+                isIn("conversation_id", convIds)
+                neq("user_id", me)
+            }
+        }.decodeList<Participant>()
+        val peerIds = others.map { it.userId }.distinct()
+        if (peerIds.isEmpty()) return emptyList()
+
+        val peerProfiles = client.from("pingchat_profiles").select {
+            filter { isIn("id", peerIds) }
+        }.decodeList<Profile>().associateBy { it.id }
+        val peerRead = others.associate { it.conversationId to it.lastReadAt }
+
+        return convs.mapNotNull { conv ->
+            val peerPart = others.firstOrNull { it.conversationId == conv.id }
                 ?: return@mapNotNull null
-            val peerId = participants.firstOrNull { it != me } ?: return@mapNotNull null
-            val peer = getProfile(peerId) ?: return@mapNotNull null
-            @Suppress("UNCHECKED_CAST")
-            val lastRead = data["lastReadAt"] as? Map<String, Any?>
-            val myReadMillis = (lastRead?.get(me) as? Long)
-            val peerReadMillis = (lastRead?.get(peerId) as? Long)
+            val peer = peerProfiles[peerPart.userId] ?: return@mapNotNull null
             // The last-message preview comes from the denormalized fields
-            // on the conversation doc itself — no messages query, so no
-            // composite index is needed. (Conversations written before
-            // v2.0.3 have no lastMessageId yet; their preview appears
-            // after the next message is sent.)
-            val lastMessageId = data["lastMessageId"] as? String
-            val last = if (lastMessageId.isNullOrBlank()) {
+            // on the conversation row itself — no messages query.
+            val last = if (conv.lastMessageId.isNullOrBlank()) {
                 null
             } else {
                 ChatMessage(
-                    id = lastMessageId,
+                    id = conv.lastMessageId,
                     conversationId = conv.id,
-                    senderId = data["lastSenderId"] as? String ?: "",
-                    body = data["lastMessage"] as? String ?: "",
-                    kind = data["lastMessageKind"] as? String ?: "text",
-                    createdAt = millisToIsoOrEmpty(data["lastMessageAt"] as? Long)
+                    senderId = conv.lastSenderId ?: "",
+                    body = conv.lastMessage ?: "",
+                    kind = conv.lastMessageKind ?: "text",
+                    createdAt = conv.lastMessageAt ?: ""
                 )
             }
-            val unread = unreadCount(conv.id, myReadMillis)
-            ConversationItem(
-                conv, peer, last,
-                millisToIso(myReadMillis), millisToIso(peerReadMillis), unread
-            )
+            val unread = unreadCount(conv.id, myRead[conv.id])
+            ConversationItem(conv, peer, last, myRead[conv.id], peerRead[conv.id], unread)
         }
     }
 
-    private suspend fun getProfile(userId: String): Profile? {
-        return try {
-            val snap = db.collection("users").document(userId).get().await()
-            if (!snap.exists()) null else profileFromDoc(userId, snap.data ?: emptyMap())
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    private suspend fun unreadCount(conversationId: String, myLastReadAtMillis: Long?): Int {
+    private suspend fun unreadCount(conversationId: String, myLastReadAt: String?): Int {
         val me = myId() ?: return 0
         return try {
-            // Single-field filter only (no orderBy/range) so no composite
-            // index is needed; the time filter runs client-side.
-            val snap = messagesRef(conversationId)
-                .whereArrayContains("participants", me)
-                .get()
-                .await()
-            snap.documents.count { doc ->
-                val senderId = doc.getString("senderId")
-                val createdAt = doc.getLong("createdAtMillis") ?: 0L
-                val deletedBy = (doc.get("deletedBy") as? List<*>)
-                    ?.mapNotNull { it as? String } ?: emptyList()
-                senderId != null && senderId != me && !deletedBy.contains(me) &&
-                    (myLastReadAtMillis == null || createdAt > myLastReadAtMillis)
-            }
+            // RLS already hides messages I deleted for myself; the time
+            // filter runs in the query (ISO strings compare correctly).
+            val rows = client.from("pingchat_messages").select(Columns.list("id")) {
+                filter {
+                    eq("conversation_id", conversationId)
+                    neq("sender_id", me)
+                    if (myLastReadAt != null) gt("created_at", myLastReadAt)
+                }
+            }.decodeList<Map<String, String>>()
+            rows.size
         } catch (e: Exception) {
             0
         }
@@ -147,23 +127,12 @@ class ChatRepository {
 
     /** Latest messages of a conversation, oldest first. */
     suspend fun loadMessages(conversationId: String, limit: Int = 200): List<ChatMessage> {
-        val me = myId() ?: return emptyList()
         return try {
-            // Single-field filter only (no orderBy) so no composite index
-            // is needed; sorting runs client-side.
-            messagesRef(conversationId)
-                .whereArrayContains("participants", me)
-                .get()
-                .await()
-                .documents
-                .map { doc ->
-                    (doc.getLong("createdAtMillis") ?: 0L) to
-                        chatMessageFromDoc(conversationId, doc.id, doc.data ?: emptyMap())
-                }
-                .sortedBy { it.first }
-                .takeLast(limit)
-                .map { it.second }
-                .filter { !it.deletedBy.contains(me) }
+            client.from("pingchat_messages").select {
+                filter { eq("conversation_id", conversationId) }
+                order("created_at", Order.ASCENDING)
+                limit(limit.toLong())
+            }.decodeList<ChatMessage>()
         } catch (e: Exception) {
             emptyList()
         }
@@ -173,18 +142,16 @@ class ChatRepository {
     suspend fun loadPeer(conversationId: String): Pair<Profile?, String?> {
         val me = myId() ?: return null to null
         return try {
-            val snap = conversationsRef().document(conversationId).get().await()
-            if (!snap.exists()) return null to null
-            val data = snap.data ?: return null to null
-            @Suppress("UNCHECKED_CAST")
-            val participants = (data["participants"] as? List<*>)
-                ?.mapNotNull { it as? String } ?: return null to null
-            val otherId = participants.firstOrNull { it != me } ?: return null to null
-            val profile = getProfile(otherId)
-            @Suppress("UNCHECKED_CAST")
-            val lastRead = data["lastReadAt"] as? Map<String, Any?>
-            val peerReadMillis = lastRead?.get(otherId) as? Long
-            profile to millisToIso(peerReadMillis)
+            val other = client.from("pingchat_conversation_participants").select {
+                filter {
+                    eq("conversation_id", conversationId)
+                    neq("user_id", me)
+                }
+            }.decodeSingleOrNull<Participant>() ?: return null to null
+            val profile = client.from("pingchat_profiles").select {
+                filter { eq("id", other.userId) }
+            }.decodeSingleOrNull<Profile>()
+            profile to other.lastReadAt
         } catch (e: Exception) {
             null to null
         }
@@ -196,23 +163,10 @@ class ChatRepository {
         messageIds: List<String>
     ): Map<String, List<Reaction>> {
         if (messageIds.isEmpty()) return emptyMap()
-        val me = myId() ?: return emptyMap()
         return try {
-            // Reactions live on the message docs themselves; read the
-            // conversation's messages once and pick out the requested ids.
-            val messages = messagesRef(conversationId)
-                .whereArrayContains("participants", me)
-                .get()
-                .await()
-                .documents
-                .map { chatMessageFromDoc(conversationId, it.id, it.data ?: emptyMap()) }
-            messages.filter { messageIds.contains(it.id) }
-                .associate { msg ->
-                    msg.id to msg.reactions.map { (uid, emoji) ->
-                        Reaction(messageId = msg.id, userId = uid, emoji = emoji)
-                    }
-                }
-                .filterValues { it.isNotEmpty() }
+            client.from("pingchat_message_reactions").select {
+                filter { isIn("message_id", messageIds) }
+            }.decodeList<Reaction>().groupBy { it.messageId }
         } catch (e: Exception) {
             emptyMap()
         }
@@ -225,26 +179,20 @@ class ChatRepository {
         replyToId: String? = null
     ): ChatMessage? {
         val me = myId() ?: return null
-        val now = nowMillis()
         return try {
-            val ref = messagesRef(conversationId).document()
-            val data = mutableMapOf<String, Any?>(
-                "senderId" to me,
-                "body" to body,
-                "kind" to "text",
-                "replyToId" to replyToId,
-                "mediaUrl" to null,
-                "mediaPath" to null,
-                "viewOnce" to false,
-                "consumedAt" to null,
-                "deletedBy" to emptyList<String>(),
-                "reactions" to emptyMap<String, String>(),
-                "participants" to participantsFor(conversationId),
-                "createdAtMillis" to now
-            )
-            ref.set(data).await()
-            updateConversationPreview(conversationId, body, "text", now, ref.id, me)
-            chatMessageFromDoc(conversationId, ref.id, data)
+            val sent = client.from("pingchat_messages").insert(
+                buildJsonObject {
+                    put("conversation_id", conversationId)
+                    put("sender_id", me)
+                    put("body", body)
+                    put("kind", "text")
+                    if (replyToId != null) put("reply_to_id", replyToId)
+                }
+            ) { select() }.decodeSingleOrNull<ChatMessage>()
+            if (sent != null) {
+                updateConversationPreview(conversationId, body, "text", sent.id, me)
+            }
+            sent
         } catch (e: Exception) {
             null
         }
@@ -254,17 +202,23 @@ class ChatRepository {
     suspend fun markRead(conversationId: String) {
         val me = myId() ?: return
         try {
-            conversationsRef().document(conversationId)
-                .update("lastReadAt.$me", nowMillis())
-                .await()
+            client.from("pingchat_conversation_participants").update(
+                { set("last_read_at", Instant.now().toString()) }
+            ) {
+                filter {
+                    eq("conversation_id", conversationId)
+                    eq("user_id", me)
+                }
+            }
         } catch (e: Exception) {
             // read markers are best-effort
         }
     }
 
     /**
-     * Send a view-once photo: upload to Firebase Storage at
-     * chat-photos/<userId>/<uuid>.<ext>, then insert a kind='photo' message.
+     * Send a view-once photo: upload to the public 'chat-photos' bucket at
+     * <userId>/<uuid>.<ext>, then insert a kind='photo' message.
+     * Supabase Storage is free — no Blaze needed.
      */
     suspend fun sendPhoto(conversationId: String, bytes: ByteArray, mime: String): ChatMessage? {
         val me = myId() ?: return null
@@ -274,16 +228,13 @@ class ChatRepository {
             "image/gif" -> "gif"
             else -> "jpg"
         }
-        val now = nowMillis()
         return try {
             val path = "$me/${UUID.randomUUID()}.$ext"
-            val ref = storage.reference.child("chat-photos/$path")
-            ref.putBytes(
-                bytes,
-                StorageMetadata.Builder().setContentType(mime).build()
-            ).await()
-            val url = ref.downloadUrl.await().toString()
-            insertMediaMessage(conversationId, me, "photo", url, path, now)
+            client.storage.from("chat-photos").upload(path, bytes) {
+                this.contentType = ContentType.parse(mime)
+            }
+            val url = client.storage.from("chat-photos").publicUrl(path)
+            insertMediaMessage(conversationId, me, "photo", url, path)
         } catch (e: Exception) {
             null
         }
@@ -292,16 +243,13 @@ class ChatRepository {
     /** Send a view-once voice message: upload the .m4a bytes, then insert. */
     suspend fun sendVoice(conversationId: String, bytes: ByteArray): ChatMessage? {
         val me = myId() ?: return null
-        val now = nowMillis()
         return try {
             val path = "$me/${UUID.randomUUID()}.m4a"
-            val ref = storage.reference.child("voice-messages/$path")
-            ref.putBytes(
-                bytes,
-                StorageMetadata.Builder().setContentType("audio/mp4").build()
-            ).await()
-            val url = ref.downloadUrl.await().toString()
-            insertMediaMessage(conversationId, me, "voice", url, path, now)
+            client.storage.from("voice-messages").upload(path, bytes) {
+                this.contentType = ContentType.parse("audio/mp4")
+            }
+            val url = client.storage.from("voice-messages").publicUrl(path)
+            insertMediaMessage(conversationId, me, "voice", url, path)
         } catch (e: Exception) {
             null
         }
@@ -312,35 +260,30 @@ class ChatRepository {
         me: String,
         kind: String,
         url: String,
-        path: String,
-        now: Long
+        path: String
     ): ChatMessage? {
         return try {
-            val ref = messagesRef(conversationId).document()
-            val data = mutableMapOf<String, Any?>(
-                "senderId" to me,
-                "body" to "",
-                "kind" to kind,
-                "replyToId" to null,
-                "mediaUrl" to url,
-                "mediaPath" to path,
-                "viewOnce" to true,
-                "consumedAt" to null,
-                "deletedBy" to emptyList<String>(),
-                "reactions" to emptyMap<String, String>(),
-                "participants" to participantsFor(conversationId),
-                "createdAtMillis" to now
-            )
-            ref.set(data).await()
-            updateConversationPreview(
-                conversationId,
-                if (kind == "photo") "Photo" else "Voice message",
-                kind,
-                now,
-                ref.id,
-                me
-            )
-            chatMessageFromDoc(conversationId, ref.id, data)
+            val sent = client.from("pingchat_messages").insert(
+                buildJsonObject {
+                    put("conversation_id", conversationId)
+                    put("sender_id", me)
+                    put("body", "")
+                    put("kind", kind)
+                    put("media_url", url)
+                    put("media_path", path)
+                    put("view_once", true)
+                }
+            ) { select() }.decodeSingleOrNull<ChatMessage>()
+            if (sent != null) {
+                updateConversationPreview(
+                    conversationId,
+                    if (kind == "photo") "Photo" else "Voice message",
+                    kind,
+                    sent.id,
+                    me
+                )
+            }
+            sent
         } catch (e: Exception) {
             null
         }
@@ -350,21 +293,19 @@ class ChatRepository {
         conversationId: String,
         preview: String,
         kind: String,
-        now: Long,
         messageId: String,
         senderId: String
     ) {
         try {
-            conversationsRef().document(conversationId).set(
-                mapOf(
-                    "lastMessage" to preview,
-                    "lastMessageAt" to now,
-                    "lastMessageKind" to kind,
-                    "lastMessageId" to messageId,
-                    "lastSenderId" to senderId
-                ),
-                SetOptions.merge()
-            ).await()
+            client.from("pingchat_conversations").update({
+                set("last_message", preview)
+                set("last_message_at", Instant.now().toString())
+                set("last_message_kind", kind)
+                set("last_message_id", messageId)
+                set("last_sender_id", senderId)
+            }) {
+                filter { eq("id", conversationId) }
+            }
         } catch (e: Exception) {
             // preview is best-effort; the message itself is already saved
         }
@@ -372,23 +313,15 @@ class ChatRepository {
 
     /**
      * View-once consume: deletes a view-once voice/photo message, but only
-     * when the caller is the recipient (the transaction refuses the sender
-     * or an already-consumed message). Returns true when the row was deleted.
+     * when the caller is the recipient (the RPC refuses the sender or an
+     * already-consumed message). Returns true when the row was deleted.
      */
     suspend fun consumeMessage(conversationId: String, messageId: String): Boolean {
-        val me = myId() ?: return false
-        val ref = messagesRef(conversationId).document(messageId)
         return try {
-            db.runTransaction { tx ->
-                val snap = tx.get(ref)
-                if (!snap.exists()) return@runTransaction false
-                val senderId = snap.getString("senderId")
-                val consumedAt = snap.getLong("consumedAt")
-                if (senderId == me || consumedAt != null) return@runTransaction false
-                if (snap.getBoolean("viewOnce") != true) return@runTransaction false
-                tx.delete(ref)
-                true
-            }.await()
+            client.postgrest.rpc(
+                "pingchat_consume_voice_message",
+                buildJsonObject { put("p_message_id", messageId) }
+            ).decodeAs<Boolean>()
         } catch (e: Exception) {
             false
         }
@@ -398,7 +331,7 @@ class ChatRepository {
      * [bucket] is the top folder ("chat-photos" / "voice-messages"). */
     suspend fun deleteMedia(bucket: String, path: String) {
         try {
-            storage.reference.child("$bucket/$path").delete().await()
+            client.storage.from(bucket).delete(path)
         } catch (e: Exception) {
             // cleanup is best-effort; the row is already gone
         }
@@ -406,199 +339,261 @@ class ChatRepository {
 
     /** Find the 1-to-1 conversation with another user, or create it (friend-gated). */
     suspend fun getOrCreateConversation(otherUserId: String): String {
-        val me = myId() ?: throw IllegalStateException("You are not signed in.")
-        val convId = pairDocId(me, otherUserId)
-        // No chat/call until the friend request is accepted (same as v1.0.5).
-        val friendSnap = db.collection("friendships").document(convId).get().await()
-        val status = friendSnap.getString("status")
-        if (status != "accepted") {
-            throw IllegalStateException("You need to be friends first.")
-        }
-        val ref = conversationsRef().document(convId)
-        val existing = ref.get().await()
-        if (!existing.exists()) {
-            val now = nowMillis()
-            ref.set(
-                mapOf(
-                    "participants" to listOf(me, otherUserId),
-                    "lastMessage" to "",
-                    "lastMessageAt" to 0L,
-                    "lastMessageKind" to "text",
-                    "lastReadAt" to emptyMap<String, Long>(),
-                    "createdAt" to now
-                )
-            ).await()
-        }
-        return convId
+        return client.postgrest.rpc(
+            "pingchat_get_or_create_conversation",
+            buildJsonObject { put("p_user_id", otherUserId) }
+        ).decodeAs<String>()
     }
 
     suspend fun deleteForMe(conversationId: String, messageId: String): Boolean {
-        val me = myId() ?: return false
         return try {
-            messagesRef(conversationId).document(messageId)
-                .update("deletedBy", FieldValue.arrayUnion(me))
-                .await()
-            true
+            client.postgrest.rpc(
+                "pingchat_delete_message_for_me",
+                buildJsonObject { put("p_message_id", messageId) }
+            ).decodeAs<Boolean>()
         } catch (e: Exception) {
             false
         }
     }
 
     suspend fun deleteForEveryone(conversationId: String, messageId: String) {
-        try {
-            messagesRef(conversationId).document(messageId).delete().await()
+        // The RPC deletes the row and returns its media_path (or null) so
+        // the file can be removed from Storage as well.
+        val mediaPath = try {
+            client.postgrest.rpc(
+                "pingchat_delete_message_for_everyone",
+                buildJsonObject { put("p_message_id", messageId) }
+            ).decodeAs<String?>()
         } catch (e: Exception) {
             throw e
+        }
+        if (!mediaPath.isNullOrBlank()) {
+            val bucket = if (mediaPath.endsWith(".m4a", ignoreCase = true) ||
+                mediaPath.endsWith(".mp3", ignoreCase = true) ||
+                mediaPath.endsWith(".webm", ignoreCase = true) ||
+                mediaPath.endsWith(".ogg", ignoreCase = true)
+            ) {
+                "voice-messages"
+            } else {
+                "chat-photos"
+            }
+            deleteMedia(bucket, mediaPath)
         }
     }
 
     suspend fun clearChat(conversationId: String) {
-        val me = myId() ?: return
-        val snap = messagesRef(conversationId)
-            .whereArrayContains("participants", me)
-            .get()
-            .await()
-        if (snap.isEmpty) return
-        val batch = db.batch()
-        snap.documents.forEach { doc ->
-            batch.update(doc.reference, "deletedBy", FieldValue.arrayUnion(me))
-        }
-        batch.commit().await()
+        client.postgrest.rpc(
+            "pingchat_clear_chat_for_me",
+            buildJsonObject { put("p_conversation_id", conversationId) }
+        )
     }
 
     /** Toggle my reaction on a message (same emoji again removes it). */
     suspend fun toggleReaction(conversationId: String, messageId: String, emoji: String) {
         val me = myId() ?: return
-        val ref = messagesRef(conversationId).document(messageId)
-        try {
-            db.runTransaction { tx ->
-                val snap = tx.get(ref)
-                if (!snap.exists()) return@runTransaction null
-                @Suppress("UNCHECKED_CAST")
-                val reactions = (snap.get("reactions") as? Map<String, String>) ?: emptyMap()
-                if (reactions[me] == emoji) {
-                    tx.update(ref, "reactions.$me", FieldValue.delete())
-                } else {
-                    tx.update(ref, "reactions.$me", emoji)
+        val mine = client.from("pingchat_message_reactions").select {
+            filter {
+                eq("message_id", messageId)
+                eq("user_id", me)
+            }
+        }.decodeSingleOrNull<Reaction>()
+        if (mine != null && mine.emoji == emoji) {
+            client.from("pingchat_message_reactions").delete {
+                filter {
+                    eq("message_id", messageId)
+                    eq("user_id", me)
                 }
-                null
-            }.await()
-        } catch (e: Exception) {
-            throw e
+            }
+        } else {
+            client.from("pingchat_message_reactions").upsert(
+                Reaction(messageId = messageId, userId = me, emoji = emoji)
+            ) { onConflict = "message_id,user_id" }
         }
     }
 
-    // ---------- realtime (Firestore listeners) ----------
+    // ---------- realtime ----------
+
+    /** Room channel for one open chat (cached, subscribed once). */
+    private suspend fun roomChannel(conversationId: String): RealtimeChannel {
+        val name = "room:$conversationId"
+        val channel = RealtimeChannels.get(name) {
+            client.realtime.channel(name)
+        }
+        RealtimeChannels.ensureSubscribed(name)
+        return channel
+    }
+
+    /** Typing channel for one open chat (cached, subscribed once). */
+    private suspend fun typingChannel(conversationId: String): RealtimeChannel {
+        val name = "typing:$conversationId"
+        val channel = RealtimeChannels.get(name) {
+            client.realtime.channel(name)
+        }
+        RealtimeChannels.ensureSubscribed(name)
+        return channel
+    }
 
     /** Live messages of one conversation, oldest first. */
     fun messagesFlow(conversationId: String): Flow<List<ChatMessage>> = callbackFlow {
-        val me = myId() ?: run { close(); return@callbackFlow }
-        val reg = messagesRef(conversationId)
-            .whereArrayContains("participants", me)
-            .addSnapshotListener { snap, _ ->
-                if (snap != null) {
-                    // No orderBy (it would need a composite index);
-                    // sorting runs client-side.
-                    val list = snap.documents
-                        .map { doc ->
-                            (doc.getLong("createdAtMillis") ?: 0L) to
-                                chatMessageFromDoc(conversationId, doc.id, doc.data ?: emptyMap())
-                        }
-                        .sortedBy { it.first }
-                        .map { it.second }
-                        .filter { m -> !m.deletedBy.contains(me) }
-                    trySend(list)
+        val scope = this
+        val channel = try {
+            roomChannel(conversationId)
+        } catch (e: Exception) {
+            close(e)
+            return@callbackFlow
+        }
+        val job = scope.launch {
+            merge(
+                channel.postgresChangeFlow<PostgresAction.Insert>("public") {
+                    table = "pingchat_messages"
+                    filter = "conversation_id=eq.$conversationId"
+                },
+                channel.postgresChangeFlow<PostgresAction.Update>("public") {
+                    table = "pingchat_messages"
+                    filter = "conversation_id=eq.$conversationId"
+                },
+                channel.postgresChangeFlow<PostgresAction.Delete>("public") {
+                    table = "pingchat_messages"
+                    filter = "conversation_id=eq.$conversationId"
                 }
+            ).collect {
+                trySend(loadMessages(conversationId))
             }
-        awaitClose { reg.remove() }
+        }
+        trySend(loadMessages(conversationId))
+        awaitClose { job.cancel() }
     }
 
     /** The other participant's last_read_at (ISO string), live. */
     fun peerReadFlow(conversationId: String): Flow<String?> = callbackFlow {
-        val me = myId()
-        val reg = conversationsRef().document(conversationId)
-            .addSnapshotListener { snap, _ ->
-                if (snap != null && snap.exists()) {
-                    @Suppress("UNCHECKED_CAST")
-                    val participants = (snap.get("participants") as? List<*>)
-                        ?.mapNotNull { it as? String } ?: emptyList()
-                    val otherId = participants.firstOrNull { it != me }
-                    @Suppress("UNCHECKED_CAST")
-                    val lastRead = snap.get("lastReadAt") as? Map<String, Any?>
-                    val millis = otherId?.let { lastRead?.get(it) as? Long }
-                    trySend(millisToIso(millis))
-                }
-            }
-        awaitClose { reg.remove() }
-    }
-
-    /** Typing events from the peer (a doc appears/updates in typing/{uid}). */
-    fun typingFlow(conversationId: String): Flow<TypingPayload> = callbackFlow {
-        val me = myId() ?: run { close(); return@callbackFlow }
-        val reg = conversationsRef().document(conversationId)
-            .collection("typing")
-            .whereArrayContains("participants", me)
-            .addSnapshotListener { snap, _ ->
-                snap?.documentChanges?.forEach { change ->
-                    if (change.type == com.google.firebase.firestore.DocumentChange.Type.ADDED ||
-                        change.type == com.google.firebase.firestore.DocumentChange.Type.MODIFIED
-                    ) {
-                        val userId = change.document.getString("userId") ?: return@forEach
-                        if (userId == me) return@forEach
-                        val name = change.document.getString("name") ?: ""
-                        trySend(TypingPayload(userId, name))
-                    }
-                }
-            }
-        awaitClose { reg.remove() }
-    }
-
-    /** Typing-stop events from the peer (their typing doc was removed). */
-    fun typingStopFlow(conversationId: String): Flow<TypingPayload> = callbackFlow {
-        val me = myId() ?: run { close(); return@callbackFlow }
-        val reg = conversationsRef().document(conversationId)
-            .collection("typing")
-            .whereArrayContains("participants", me)
-            .addSnapshotListener { snap, _ ->
-                snap?.documentChanges?.forEach { change ->
-                    if (change.type == com.google.firebase.firestore.DocumentChange.Type.REMOVED) {
-                        val userId = change.document.getString("userId") ?: return@forEach
-                        if (userId == me) return@forEach
-                        trySend(TypingPayload(userId))
-                    }
-                }
-            }
-        awaitClose { reg.remove() }
-    }
-
-    /** Tell the peer I am typing (writes my typing doc). */
-    suspend fun sendTyping(conversationId: String, payload: TypingPayload) {
-        val me = myId() ?: return
-        try {
-            conversationsRef().document(conversationId)
-                .collection("typing").document(me)
-                .set(
-                    mapOf(
-                        "userId" to me,
-                        "name" to payload.name,
-                        "updatedAt" to nowMillis(),
-                        "participants" to participantsFor(conversationId)
+        val scope = this
+        val channel = try {
+            roomChannel(conversationId)
+        } catch (e: Exception) {
+            close(e)
+            return@callbackFlow
+        }
+        val job = scope.launch {
+            channel.postgresChangeFlow<PostgresAction.Update>("public") {
+                table = "pingchat_conversation_participants"
+                filter = "conversation_id=eq.$conversationId"
+            }.collect { action ->
+                val userId = action.record["user_id"]?.toString()?.trim('"')
+                if (userId != null && userId != myId()) {
+                    trySend(
+                        action.record["last_read_at"]?.toString()?.trim('"')
+                            ?.takeIf { it != "null" }
                     )
-                ).await()
+                }
+            }
+        }
+        awaitClose { job.cancel() }
+    }
+
+    /** Typing events from the peer (broadcast on the typing channel). */
+    @OptIn(SupabaseInternal::class)
+    fun typingFlow(conversationId: String): Flow<TypingPayload> = callbackFlow {
+        val scope = this
+        val channel = try {
+            typingChannel(conversationId)
+        } catch (e: Exception) {
+            close(e)
+            return@callbackFlow
+        }
+        val job = scope.launch {
+            channel.broadcastFlow<TypingPayload>("typing").collect { trySend(it) }
+        }
+        awaitClose { job.cancel() }
+    }
+
+    /** Typing-stop events from the peer. */
+    @OptIn(SupabaseInternal::class)
+    fun typingStopFlow(conversationId: String): Flow<TypingPayload> = callbackFlow {
+        val scope = this
+        val channel = try {
+            typingChannel(conversationId)
+        } catch (e: Exception) {
+            close(e)
+            return@callbackFlow
+        }
+        val job = scope.launch {
+            channel.broadcastFlow<TypingPayload>("typing-stop").collect { trySend(it) }
+        }
+        awaitClose { job.cancel() }
+    }
+
+    /** Tell the peer I am typing (broadcast, best-effort). */
+    suspend fun sendTyping(conversationId: String, payload: TypingPayload) {
+        try {
+            typingChannel(conversationId).broadcast("typing", payload)
         } catch (e: Exception) {
             // typing is best-effort
         }
     }
 
-    /** Tell the peer I stopped typing (removes my typing doc). */
+    /** Tell the peer I stopped typing (broadcast, best-effort). */
     suspend fun sendTypingStop(conversationId: String, payload: TypingPayload) {
-        val me = myId() ?: return
         try {
-            conversationsRef().document(conversationId)
-                .collection("typing").document(me)
-                .delete().await()
+            typingChannel(conversationId).broadcast("typing-stop", payload)
         } catch (e: Exception) {
             // typing is best-effort
         }
     }
+
+    // ---------- presence (who is online) + global feed (SessionManager) ----------
+
+    /** The "online" presence channel. Presence key = user id (same as the web app). */
+    suspend fun presenceChannel(myId: String): RealtimeChannel {
+        val channel = RealtimeChannels.get("online") {
+            client.realtime.channel("online") {
+                presence { key = myId }
+            }
+        }
+        RealtimeChannels.ensureSubscribed("online", block = true)
+        return channel
+    }
+
+    /** Emits (joinedUserIds, leftUserIds) on every presence change. */
+    fun presenceFlow(channel: RealtimeChannel): Flow<Pair<Set<String>, Set<String>>> =
+        channel.presenceChangeFlow().map { action ->
+            action.joins.keys to action.leaves.keys
+        }
+
+    suspend fun trackPresence(channel: RealtimeChannel, state: PresenceState) {
+        try {
+            channel.track(state)
+        } catch (e: Exception) {
+            // best-effort
+        }
+    }
+
+    /** Global feed: INSERT / UPDATE / DELETE on pingchat_messages. Caller must subscribe. */
+    suspend fun messagesFeedChannel(): RealtimeChannel {
+        val channel = RealtimeChannels.get("messages-feed") {
+            client.realtime.channel("messages-feed")
+        }
+        RealtimeChannels.ensureSubscribed("messages-feed")
+        return channel
+    }
+
+    fun messagesInsertFlow(channel: RealtimeChannel): Flow<ChatMessage> =
+        channel.postgresChangeFlow<PostgresAction.Insert>("public") {
+            table = "pingchat_messages"
+        }.map { it.decodeRecord<ChatMessage>() }
+
+    fun messagesUpdateFlow(channel: RealtimeChannel): Flow<ChatMessage> =
+        channel.postgresChangeFlow<PostgresAction.Update>("public") {
+            table = "pingchat_messages"
+        }.map { it.decodeRecord<ChatMessage>() }
+
+    fun messagesDeleteFlow(channel: RealtimeChannel): Flow<String> =
+        channel.postgresChangeFlow<PostgresAction.Delete>("public") {
+            table = "pingchat_messages"
+        }.map { it.oldRecord["id"]?.toString()?.trim('"') ?: "" }
+
+    /** Drop a cached channel (sign-out). */
+    suspend fun dropChannel(name: String) = RealtimeChannels.drop(name)
+
+    /** Drop every chat channel (sign-out). */
+    suspend fun dropAllChannels() = RealtimeChannels.dropAll()
 }

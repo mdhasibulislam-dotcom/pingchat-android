@@ -5,21 +5,23 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import androidx.core.app.RemoteInput
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.postgrest.from
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.tasks.await
 
 /**
  * Inline reply from the notification bar (v2.0.8): the user types a
- * reply in the notification shade, this receiver sends it to Firestore
- * exactly like ChatRepository.sendMessage (same message doc + chat-list
+ * reply in the notification shade, this receiver sends it to Supabase
+ * exactly like ChatRepository.sendMessage (same message row + chat-list
  * preview), notifies the peer the same way ChatViewModel does, and
  * dismisses the notification. If sending fails, the notification is
  * left alone so the user can retry from the app.
  *
- * Runs in a cold process too: FirebaseApp is auto-initialised from
- * google-services.json, and the saved login restores synchronously.
+ * Runs in a cold process too: the Supabase client restores the saved
+ * GoTrue session from storage, but that load is asynchronous — so this
+ * receiver waits for the session (up to 8s) before sending.
  */
 class NotificationReplyReceiver : BroadcastReceiver() {
 
@@ -36,6 +38,7 @@ class NotificationReplyReceiver : BroadcastReceiver() {
         val pending = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
+                if (!Supabase.awaitSignedIn()) return@launch
                 val sent = ChatRepository().sendMessage(conversationId, text)
                 if (sent != null) {
                     notifyPeer(conversationId, text)
@@ -54,18 +57,21 @@ class NotificationReplyReceiver : BroadcastReceiver() {
     /** WhatsApp-style push back to the peer (best-effort — the message is already sent). */
     private suspend fun notifyPeer(conversationId: String, text: String) {
         try {
-            val db = FirebaseDb.db
-            val me = FirebaseDb.auth.currentUser?.uid ?: return
-            val conv = db.collection("conversations").document(conversationId).get().await()
-            @Suppress("UNCHECKED_CAST")
-            val participants = (conv.data?.get("participants") as? List<*>)
-                ?.mapNotNull { it as? String } ?: return
-            val peerId = participants.firstOrNull { it != me } ?: return
-            val peer = db.collection("users").document(peerId).get().await()
-            val token = peer.data?.get("fcmToken") as? String ?: return
-            val myDoc = db.collection("users").document(me).get().await()
-            val myName = (myDoc.data?.get("fullName") as? String)?.ifBlank { null }
-                ?: (myDoc.data?.get("username") as? String)?.ifBlank { null }
+            val client = Supabase.client
+            val me = client.auth.currentUserOrNull()?.id ?: return
+            val parts = client.from("pingchat_conversation_participants").select {
+                filter { eq("conversation_id", conversationId) }
+            }.decodeList<Participant>()
+            val peerId = parts.firstOrNull { it.userId != me }?.userId ?: return
+            val peer = client.from("pingchat_profiles").select {
+                filter { eq("id", peerId) }
+            }.decodeSingleOrNull<Profile>()
+            val token = peer?.fcmToken ?: return
+            val myProfile = client.from("pingchat_profiles").select {
+                filter { eq("id", me) }
+            }.decodeSingleOrNull<Profile>()
+            val myName = myProfile?.fullName?.ifBlank { null }
+                ?: myProfile?.username?.ifBlank { null }
                 ?: "PingChat"
             PushSender.sendPush(
                 token, myName, text,

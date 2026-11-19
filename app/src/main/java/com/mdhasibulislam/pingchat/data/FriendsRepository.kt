@@ -1,36 +1,41 @@
 package com.mdhasibulislam.pingchat.data
 
-import com.google.firebase.firestore.Query
+import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.postgrest
+import io.github.jan.supabase.postgrest.query.Order
+import io.github.jan.supabase.realtime.PostgresAction
+import io.github.jan.supabase.realtime.channel
+import io.github.jan.supabase.realtime.postgresChangeFlow
+import io.github.jan.supabase.realtime.realtime
 import kotlinx.coroutines.channels.awaitClose
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.callbackFlow
-import kotlinx.coroutines.tasks.await
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 /**
- * Friend system: directory, requests, accept/decline — on Firestore (v2.0.0).
+ * Friend system: directory, requests, accept/decline — on Supabase (v3.0.0).
  *
- * Layout: friendships/{pairId} where pairId = the two uids sorted and joined
- * with "_": { requesterId, addresseeId, status: pending/accepted/declined,
- * createdAt (millis) }. One doc per pair, so a request can never duplicate.
- * Private-profile visibility is enforced client-side (public OR friend OR
- * pending-request preview, else name/photo only) — same as v1.0.5.
+ * Layout: pingchat_friendships { requester_id, addressee_id,
+ * status: pending/accepted/declined, created_at, updated_at }. One row per
+ * pair (unique index on the unordered pair), so a request can never
+ * duplicate. Private-profile visibility is enforced client-side (public OR
+ * friend OR pending-request preview, else name/photo only) — same as v2.0.9.
  */
 class FriendsRepository {
-    private val db get() = FirebaseDb.db
+    private val client get() = Supabase.client
 
-    fun myId(): String? = FirebaseDb.auth.currentUser?.uid
-
-    private fun friendshipsRef() = db.collection("friendships")
+    fun myId(): String? = client.auth.currentUserOrNull()?.id
 
     /** All users, for the People directory (avatar + name + username). */
     suspend fun loadAllUsers(): List<Profile> {
         return try {
-            db.collection("users")
-                .orderBy("fullName", Query.Direction.ASCENDING)
-                .get()
-                .await()
-                .documents
-                .map { profileFromDoc(it.id, it.data ?: emptyMap()) }
+            client.from("pingchat_profiles").select {
+                order("full_name", Order.ASCENDING)
+            }.decodeList<Profile>()
         } catch (e: Exception) {
             emptyList()
         }
@@ -38,53 +43,45 @@ class FriendsRepository {
 
     /** Friendship state with one user, from the caller's point of view. */
     suspend fun friendshipStatus(userId: String): FriendState {
-        val me = myId() ?: return FriendState.NONE
         return try {
-            val snap = friendshipsRef().document(pairDocId(me, userId)).get().await()
-            if (!snap.exists()) return FriendState.NONE
-            val status = snap.getString("status") ?: return FriendState.NONE
-            val requesterId = snap.getString("requesterId")
-            when (status) {
-                "accepted" -> FriendState.FRIENDS
-                "declined" -> FriendState.DECLINED
-                "pending" -> if (requesterId == me) FriendState.PENDING_OUT
-                else FriendState.PENDING_IN
-                else -> FriendState.NONE
-            }
+            val value = client.postgrest.rpc(
+                "pingchat_friendship_status",
+                buildJsonObject { put("p_user_id", userId) }
+            ).decodeAs<String>()
+            FriendState.fromRpc(value)
         } catch (e: Exception) {
             FriendState.NONE
         }
     }
 
     suspend fun sendFriendRequest(userId: String) {
-        val me = myId() ?: return
-        val now = nowMillis()
-        friendshipsRef().document(pairDocId(me, userId)).set(
-            mapOf(
-                "requesterId" to me,
-                "addresseeId" to userId,
-                "status" to "pending",
-                "createdAt" to now,
-                "updatedAt" to now
-            )
-        ).await()
+        client.postgrest.rpc(
+            "pingchat_send_friend_request",
+            buildJsonObject { put("p_user_id", userId) }
+        )
     }
 
     suspend fun respondFriendRequest(requesterId: String, accept: Boolean) {
-        val me = myId() ?: return
-        friendshipsRef().document(pairDocId(me, requesterId)).update(
-            mapOf(
-                "status" to if (accept) "accepted" else "declined",
-                "updatedAt" to nowMillis()
-            )
-        ).await()
+        client.postgrest.rpc(
+            "pingchat_respond_friend_request",
+            buildJsonObject {
+                put("p_requester_id", requesterId)
+                put("p_accept", accept)
+            }
+        )
     }
 
     /** Cancel a pending request I sent. */
     suspend fun cancelFriendRequest(userId: String) {
         val me = myId() ?: return
         try {
-            friendshipsRef().document(pairDocId(me, userId)).delete().await()
+            client.from("pingchat_friendships").delete {
+                filter {
+                    eq("requester_id", me)
+                    eq("addressee_id", userId)
+                    eq("status", "pending")
+                }
+            }
         } catch (e: Exception) {
             throw e
         }
@@ -94,19 +91,21 @@ class FriendsRepository {
     suspend fun loadIncomingRequests(): List<Pair<Friendship, Profile>> {
         val me = myId() ?: return emptyList()
         return try {
-            val rows = friendshipsRef()
-                .whereEqualTo("addresseeId", me)
-                .get()
-                .await()
-                .documents
-                .map { friendshipFromDoc(it.id, it.data ?: emptyMap()) }
-                .filter { it.status == "pending" }
-                .sortedByDescending { it.createdAt }
+            val rows = client.from("pingchat_friendships").select {
+                filter {
+                    eq("addressee_id", me)
+                    eq("status", "pending")
+                }
+                order("created_at", Order.DESCENDING)
+            }.decodeList<Friendship>()
             if (rows.isEmpty()) return emptyList()
-            val profiles = rows.mapNotNull { row ->
-                getProfile(row.requesterId)?.let { row to it }
+            val profiles = client.from("pingchat_profiles").select {
+                filter { isIn("id", rows.map { it.requesterId }) }
+            }.decodeList<Profile>().associateBy { it.id }
+            rows.mapNotNull { row ->
+                val profile = profiles[row.requesterId] ?: return@mapNotNull null
+                row to profile
             }
-            profiles
         } catch (e: Exception) {
             emptyList()
         }
@@ -116,55 +115,47 @@ class FriendsRepository {
     suspend fun loadFriends(): List<Profile> {
         val me = myId() ?: return emptyList()
         return try {
-            val asRequester = friendshipsRef()
-                .whereEqualTo("requesterId", me)
-                .get()
-                .await()
-                .documents
-                .map { friendshipFromDoc(it.id, it.data ?: emptyMap()) }
-            val asAddressee = friendshipsRef()
-                .whereEqualTo("addresseeId", me)
-                .get()
-                .await()
-                .documents
-                .map { friendshipFromDoc(it.id, it.data ?: emptyMap()) }
-            val ids = (asRequester + asAddressee)
-                .filter { it.status == "accepted" }
-                .map { if (it.requesterId == me) it.addresseeId else it.requesterId }
-                .distinct()
+            val asRequester = client.from("pingchat_friendships").select {
+                filter {
+                    eq("requester_id", me)
+                    eq("status", "accepted")
+                }
+            }.decodeList<Friendship>()
+            val asAddressee = client.from("pingchat_friendships").select {
+                filter {
+                    eq("addressee_id", me)
+                    eq("status", "accepted")
+                }
+            }.decodeList<Friendship>()
+            val ids = (asRequester.map { it.addresseeId } + asAddressee.map { it.requesterId }).distinct()
             if (ids.isEmpty()) return emptyList()
-            ids.mapNotNull { getProfile(it) }
-                .sortedBy { it.fullName.lowercase() }
+            client.from("pingchat_profiles").select {
+                filter { isIn("id", ids) }
+                order("full_name", Order.ASCENDING)
+            }.decodeList<Profile>()
         } catch (e: Exception) {
             emptyList()
         }
     }
 
-    private suspend fun getProfile(userId: String): Profile? {
-        return try {
-            val snap = db.collection("users").document(userId).get().await()
-            if (!snap.exists()) null else profileFromDoc(userId, snap.data ?: emptyMap())
-        } catch (e: Exception) {
-            null
-        }
-    }
-
-    /** Live updates for the People badge: any change to my friendships. */
+    /** Live updates for the People badge: any change to pingchat_friendships. */
     fun friendshipsFlow(): Flow<Unit> = callbackFlow {
-        val me = myId()
-        if (me == null) {
-            close()
+        val scope = this
+        val channel = try {
+            RealtimeChannels.get("friendships-feed") {
+                client.realtime.channel("friendships-feed")
+            }.also {
+                RealtimeChannels.ensureSubscribed("friendships-feed")
+            }
+        } catch (e: Exception) {
+            close(e)
             return@callbackFlow
         }
-        val reg1 = friendshipsRef()
-            .whereEqualTo("requesterId", me)
-            .addSnapshotListener { _, _ -> trySend(Unit) }
-        val reg2 = friendshipsRef()
-            .whereEqualTo("addresseeId", me)
-            .addSnapshotListener { _, _ -> trySend(Unit) }
-        awaitClose {
-            reg1.remove()
-            reg2.remove()
+        val job = scope.launch {
+            channel.postgresChangeFlow<PostgresAction>("public") {
+                table = "pingchat_friendships"
+            }.map { }.collect { trySend(Unit) }
         }
+        awaitClose { job.cancel() }
     }
 }

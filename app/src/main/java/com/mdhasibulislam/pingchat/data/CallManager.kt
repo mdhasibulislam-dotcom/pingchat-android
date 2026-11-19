@@ -38,18 +38,18 @@ import org.webrtc.VideoTrack
 import java.util.UUID
 
 /**
- * Real audio/video calls: WebRTC peer connection + Firestore signaling
- * (v2.0.0 — calls/{callId} doc + candidates subcollection, replacing the
- * the Realtime channels of v1.0.5). One call at a time,
- * app-wide: the incoming-call dialog and the in-call screen are rendered
- * from MainScreen, whatever tab the user is on.
+ * Real audio/video calls: WebRTC peer connection + Realtime Broadcast
+ * signaling (v3.0.0 — channels calls:<userId>, replacing the Firestore
+ * calls/{callId} doc + candidates subcollection of v2.0.0). One call at a
+ * time, app-wide: the incoming-call dialog and the in-call screen are
+ * rendered from MainScreen, whatever tab the user is on.
  *
  * Started once per sign-in from MainActivity (CallManager.start) and
  * stopped on sign-out. All WebRTC work happens on the calling thread
  * (main) for setup; media flows on WebRTC's own threads.
  *
- * NOTE: this is a separate Firebase system from the web app — native users
- * can only call other native (Firebase) users, not web users.
+ * NOTE: this is a separate Supabase system from the web app — native users
+ * can only call other native (Supabase) users, not web users.
  */
 object CallManager {
     private val repo = CallRepository()
@@ -114,7 +114,7 @@ object CallManager {
     private var timerJob: Job? = null
     private val pendingCandidates = mutableListOf<IceCandidateJson>()
 
-    /** Watch Firestore for ringing calls addressed to me. */
+    /** Watch Realtime Broadcast for ringing calls addressed to me. */
     fun start(context: Context, userId: String, prefs: Prefs) {
         if (started && myId == userId) return
         stop()
@@ -138,6 +138,12 @@ object CallManager {
                     repo.markEnded(callId, duration)
                 } catch (e: Exception) {
                 }
+            }
+        }
+        scope.launch {
+            try {
+                repo.closeChannels()
+            } catch (e: Exception) {
             }
         }
         started = false
@@ -193,6 +199,11 @@ object CallManager {
         currentKind = kind
         currentConversationId = conversationId
         currentDirection = "outgoing"
+        // Tell the repo the peer NOW — ICE candidates are generated during
+        // createOffer/setLocalDescription below, before insertCall runs, and
+        // they need a peer channel to go to (M3: with Firestore they were
+        // lost because the call doc did not exist yet).
+        repo.setCallPeer(callId, peer.id)
         attachCallListeners(callId, peer.id, outgoing = true)
         setAudioMode(kind)
         _session.value = CallSession(
@@ -243,7 +254,7 @@ object CallManager {
         val myName = SessionManager.profile.value?.fullName?.ifBlank {
             SessionManager.profile.value?.username
         } ?: "Someone"
-        // The ringing call doc IS the offer: creating it rings the callee.
+        // The ringing call row IS the offer record: creating it rings the callee.
         val row = repo.insertCall(
             callId, conversationId, me, peer.id, kind, myName,
             SdpJson(offer.type.canonicalForm(), offer.description)
@@ -270,6 +281,9 @@ object CallManager {
 
     private fun onOffer(payload: CallOfferPayload) {
         scope.launch {
+            // The same offer can arrive twice (live broadcast + the ringing
+            // sweep in incomingOfferFlow) — never auto-decline my own call.
+            if (_incoming.value?.callId == payload.callId) return@launch
             if (_session.value != null || _incoming.value != null) {
                 // Busy: auto-decline so the caller is not left ringing.
                 repo.sendCallEnd(payload.callId, "declined")
@@ -409,7 +423,22 @@ object CallManager {
             endCallInternal(null)
             return "Could not answer call. Try again."
         }
-        repo.sendAnswer(inc.callId, SdpJson(answer.type.canonicalForm(), answer.description))
+        // M4: the network can drop right at Accept — sending the answer
+        // must never crash the app. A failed send ends the call cleanly
+        // instead (the caller sees it as declined).
+        val answerSent = try {
+            repo.sendAnswer(inc.callId, SdpJson(answer.type.canonicalForm(), answer.description))
+        } catch (e: Exception) {
+            false
+        }
+        if (!answerSent) {
+            scope.launch {
+                repo.sendCallEnd(inc.callId, "declined")
+                repo.markDeclined(inc.callId)
+            }
+            endCallInternal(null)
+            return "Could not send the answer. Check your connection and try again."
+        }
         repo.markAccepted(inc.callId)
         flushPendingCandidates()
         return null
@@ -426,7 +455,7 @@ object CallManager {
         clearCurrent()
     }
 
-    // ---------- signaling handlers (Firestore listeners) ----------
+    // ---------- signaling handlers (Realtime Broadcast) ----------
 
     private fun onAnswer(payload: CallAnswerPayload) {
         val s = _session.value ?: return

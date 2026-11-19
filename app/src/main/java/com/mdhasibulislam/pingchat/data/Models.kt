@@ -3,7 +3,7 @@ package com.mdhasibulislam.pingchat.data
 import kotlinx.serialization.SerialName
 import kotlinx.serialization.Serializable
 
-/** A user profile (Firestore: users/{uid}). */
+/** A user profile (Supabase: pingchat_profiles). */
 @Serializable
 data class Profile(
     @SerialName("id") val id: String,
@@ -14,20 +14,25 @@ data class Profile(
     @SerialName("phone") val phone: String? = null,
     @SerialName("fcm_token") val fcmToken: String? = null,
     @SerialName("is_public") val isPublic: Boolean = true,
+    @SerialName("online") val online: Boolean = false,
+    @SerialName("last_seen") val lastSeen: String? = null,
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = ""
 )
 
-/** A 1-to-1 conversation (Firestore: conversations/{id}). */
+/** A 1-to-1 conversation (Supabase: pingchat_conversations). */
 @Serializable
 data class Conversation(
     @SerialName("id") val id: String,
     @SerialName("created_at") val createdAt: String = "",
-    @SerialName("last_message_at") val lastMessageAt: String? = null
+    @SerialName("last_message_at") val lastMessageAt: String? = null,
+    @SerialName("last_message") val lastMessage: String? = null,
+    @SerialName("last_message_kind") val lastMessageKind: String? = null,
+    @SerialName("last_message_id") val lastMessageId: String? = null,
+    @SerialName("last_sender_id") val lastSenderId: String? = null
 )
 
-/** Membership + read position — in Firestore this lives on the conversation
- * doc itself as lastReadAt: {userId: epochMillis}. */
+/** Membership + read position (Supabase: pingchat_conversation_participants). */
 @Serializable
 data class Participant(
     @SerialName("conversation_id") val conversationId: String,
@@ -35,7 +40,7 @@ data class Participant(
     @SerialName("last_read_at") val lastReadAt: String? = null
 )
 
-/** A chat message (Firestore: conversations/{id}/messages/{msgId}). */
+/** A chat message (Supabase: pingchat_messages). */
 @Serializable
 data class ChatMessage(
     @SerialName("id") val id: String,
@@ -50,11 +55,11 @@ data class ChatMessage(
     @SerialName("view_once") val viewOnce: Boolean = false,
     @SerialName("consumed_at") val consumedAt: String? = null,
     @SerialName("deleted_by") val deletedBy: List<String> = emptyList(),
-    /** Reactions stored on the message doc itself: {userId: emoji}. */
+    /** Reactions live in pingchat_message_reactions, not on the message row. */
     val reactions: Map<String, String> = emptyMap()
 )
 
-/** One reaction per user per message (stored on the message doc: reactions {userId: emoji}). */
+/** One reaction per user per message (Supabase: pingchat_message_reactions). */
 @Serializable
 data class Reaction(
     @SerialName("message_id") val messageId: String,
@@ -63,7 +68,7 @@ data class Reaction(
     @SerialName("created_at") val createdAt: String = ""
 )
 
-/** A friend request / friendship (Firestore: friendships/{pairId}). status: pending/accepted/declined. */
+/** A friend request / friendship (Supabase: pingchat_friendships). status: pending/accepted/declined. */
 @Serializable
 data class Friendship(
     @SerialName("id") val id: String,
@@ -74,15 +79,18 @@ data class Friendship(
     @SerialName("updated_at") val updatedAt: String = ""
 )
 
-/** A call row (Firestore: calls/{callId}). */
+/** A call row (Supabase: pingchat_calls). */
 @Serializable
 data class CallRow(
     @SerialName("id") val id: String,
     @SerialName("conversation_id") val conversationId: String? = null,
     @SerialName("caller_id") val callerId: String,
     @SerialName("callee_id") val calleeId: String,
+    @SerialName("caller_name") val callerName: String? = null,
     @SerialName("kind") val kind: String = "audio",
     @SerialName("status") val status: String = "ringing",
+    @SerialName("offer_sdp") val offerSdp: SdpJson? = null,
+    @SerialName("answer_sdp") val answerSdp: SdpJson? = null,
     @SerialName("started_at") val startedAt: String? = null,
     @SerialName("ended_at") val endedAt: String? = null,
     @SerialName("duration_seconds") val durationSeconds: Int? = null,
@@ -158,75 +166,3 @@ fun messageDisplayText(message: ChatMessage): String {
         }
     }
 }
-
-// ---------- Firestore document converters (v2.0.0) ----------
-// Firestore stores timestamps as epoch millis; the models keep ISO strings
-// so every UI / ViewModel comparison (TimeFormat.parse, tickState) works
-// unchanged. Field names in Firestore are camelCase; the @SerialName
-// values above are kept for readability only.
-
-@Suppress("UNCHECKED_CAST")
-fun profileFromDoc(id: String, data: Map<String, Any?>): Profile = Profile(
-    id = id,
-    username = data["username"] as? String ?: "",
-    fullName = data["fullName"] as? String ?: "",
-    bio = data["bio"] as? String,
-    avatarUrl = data["avatarUrl"] as? String,
-    phone = data["phone"] as? String,
-    fcmToken = data["fcmToken"] as? String,
-    isPublic = data["isPublic"] as? Boolean ?: true,
-    createdAt = millisToIsoOrEmpty(data["createdAt"] as? Long),
-    updatedAt = millisToIsoOrEmpty(data["updatedAt"] as? Long)
-)
-
-fun conversationFromDoc(id: String, data: Map<String, Any?>): Conversation = Conversation(
-    id = id,
-    createdAt = millisToIsoOrEmpty(data["createdAt"] as? Long),
-    lastMessageAt = millisToIso(data["lastMessageAt"] as? Long)
-)
-
-@Suppress("UNCHECKED_CAST")
-fun chatMessageFromDoc(conversationId: String, id: String, data: Map<String, Any?>): ChatMessage =
-    ChatMessage(
-        id = id,
-        conversationId = conversationId,
-        senderId = data["senderId"] as? String ?: "",
-        body = data["body"] as? String ?: "",
-        createdAt = millisToIsoOrEmpty(data["createdAtMillis"] as? Long),
-        replyToId = data["replyToId"] as? String,
-        kind = data["kind"] as? String ?: "text",
-        mediaUrl = data["mediaUrl"] as? String,
-        mediaPath = data["mediaPath"] as? String,
-        viewOnce = data["viewOnce"] as? Boolean ?: false,
-        consumedAt = millisToIso(data["consumedAt"] as? Long),
-        deletedBy = (data["deletedBy"] as? List<*>)?.mapNotNull { it as? String } ?: emptyList(),
-        reactions = (data["reactions"] as? Map<*, *>)
-            ?.mapNotNull { (k, v) -> (k as? String)?.let { it to (v as? String ?: "") } }
-            ?.toMap() ?: emptyMap()
-    )
-
-fun friendshipFromDoc(id: String, data: Map<String, Any?>): Friendship = Friendship(
-    id = id,
-    requesterId = data["requesterId"] as? String ?: "",
-    addresseeId = data["addresseeId"] as? String ?: "",
-    status = data["status"] as? String ?: "pending",
-    createdAt = millisToIsoOrEmpty(data["createdAt"] as? Long),
-    updatedAt = millisToIsoOrEmpty(data["updatedAt"] as? Long)
-)
-
-fun callRowFromDoc(id: String, data: Map<String, Any?>): CallRow = CallRow(
-    id = id,
-    conversationId = data["conversationId"] as? String,
-    callerId = data["callerId"] as? String ?: "",
-    calleeId = data["calleeId"] as? String ?: "",
-    kind = data["kind"] as? String ?: "audio",
-    status = data["status"] as? String ?: "ringing",
-    startedAt = millisToIso(data["startedAt"] as? Long),
-    endedAt = millisToIso(data["endedAt"] as? Long),
-    durationSeconds = (data["durationSeconds"] as? Long)?.toInt(),
-    createdAt = millisToIsoOrEmpty(data["createdAt"] as? Long)
-)
-
-/** Deterministic conversation / friendship doc id for a pair of users. */
-fun pairDocId(a: String, b: String): String =
-    if (a < b) "${a}_${b}" else "${b}_${a}"
