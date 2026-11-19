@@ -117,7 +117,7 @@ class AuthRepository {
                 Supabase.client.from("pingchat_profiles").update({
                     set("online", false)
                     set("last_seen", nowIso())
-                    set("fcm_token", null)
+                    set("fcm_token", null as String?)
                 }) {
                     filter { eq("id", uid) }
                 }

@@ -13,6 +13,7 @@ import java.time.Instant
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
+import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.withTimeoutOrNull
 
 /**
@@ -80,7 +81,7 @@ object Supabase {
     /** This device's FCM token (null when Firebase Messaging has none yet). */
     suspend fun fcmToken(): String? {
         return try {
-            kotlinx.coroutines.tasks.await(FirebaseMessaging.getInstance().token)
+            FirebaseMessaging.getInstance().token.await()
         } catch (e: Exception) {
             null
         }
