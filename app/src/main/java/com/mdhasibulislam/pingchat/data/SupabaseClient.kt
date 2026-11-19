@@ -107,9 +107,16 @@ internal object RealtimeChannels {
         val channel = mutex.withLock { channels[name] } ?: return
         val first = mutex.withLock { subscribed.add(name) }
         if (!first) return
-        try {
+        // v3.1.1: withTimeoutOrNull returns null on timeout WITHOUT
+        // throwing, so the old code kept the name marked subscribed even
+        // though the join never confirmed — the watch then sat on a
+        // half-joined channel forever. Clear the flag on timeout too.
+        val joined = try {
             withTimeoutOrNull(10_000) { channel.subscribe(block) }
         } catch (e: Exception) {
+            null
+        }
+        if (joined == null) {
             mutex.withLock { subscribed.remove(name) }
         }
     }

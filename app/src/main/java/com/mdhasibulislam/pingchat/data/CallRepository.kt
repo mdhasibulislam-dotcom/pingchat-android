@@ -10,11 +10,14 @@ import io.github.jan.supabase.realtime.broadcastFlow
 import io.github.jan.supabase.realtime.channel
 import io.github.jan.supabase.realtime.realtime
 import java.time.Instant
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.filter
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
@@ -68,6 +71,12 @@ class CallRepository {
 
     /** callId -> peer user id, so signals know where to go. */
     private val callPeers = mutableMapOf<String, String>()
+
+    /** Serialises joins of my own channel: the offer, cancel and
+     *  per-call flows all call myChannel() concurrently, and without
+     *  this one could drop the channel as "not subscribed" while
+     *  another was still mid-join. */
+    private val myChannelMutex = Mutex()
 
     /** Remember the peer for a call before the first ICE candidate exists (M3). */
     fun setCallPeer(callId: String, peerId: String) {
@@ -259,15 +268,31 @@ class CallRepository {
 
     // ---------- signaling transport (Realtime Broadcast) ----------
 
-    /** My own channel: I receive call-offer/answer/candidates on `calls:<myId>`. */
+    /** My own channel: I receive call-offer/answer/candidates on `calls:<myId>`.
+     *  The join is CONFIRMED (block = true waits for the server's
+     *  SUBSCRIBED reply) and VERIFIED: RealtimeChannels marks a channel
+     *  subscribed even when its 10s join times out (withTimeoutOrNull
+     *  swallows the timeout, so the catch that clears the flag never
+     *  runs) — collecting broadcasts on such a half-joined channel
+     *  silently receives nothing, forever. A join that does not confirm
+     *  drops the channel and retries, so the next attempt really
+     *  re-joins; null after 3 attempts means the callers retry later
+     *  instead of collecting on a dead channel. */
     private suspend fun myChannel(): RealtimeChannel? {
         val me = myId() ?: return null
         val name = "calls:$me"
-        val channel = RealtimeChannels.get(name) {
-            client.realtime.channel(name)
+        return myChannelMutex.withLock {
+            repeat(3) { attempt ->
+                val channel = RealtimeChannels.get(name) {
+                    client.realtime.channel(name)
+                }
+                RealtimeChannels.ensureSubscribed(name, block = true)
+                if (channel.status.value == RealtimeChannel.Status.SUBSCRIBED) return@withLock channel
+                RealtimeChannels.drop(name)
+                if (attempt < 2) delay(1_000)
+            }
+            null
         }
-        RealtimeChannels.ensureSubscribed(name)
-        return channel
     }
 
     /**
@@ -379,86 +404,180 @@ class CallRepository {
      * last 7 days is emitted once when collection starts if it is still
      * inside the 30s ring window, or marked missed (with a history entry)
      * if the ring already timed out while the app was closed.
+     *
+     * The flow NEVER completes while the caller collects it: if the
+     * channel cannot be joined yet it retries instead of returning
+     * (a completed flow used to end the incoming-call watch silently
+     * for the rest of the session), and the still-ringing rows are
+     * re-swept every 10s as a safety net — broadcast is fire-and-forget,
+     * and a call push tapped while the app was already open never
+     * re-rings on its own (the push only shows a notification; the
+     * row is the truth). Duplicate offers are de-duplicated by callId.
      */
     @OptIn(SupabaseInternal::class)
     fun incomingOfferFlow(): Flow<CallOfferPayload> = flow {
-        val me = myId()
-        if (me != null) {
-            try {
-                val cutoff = Instant.now().minusSeconds(7 * 24 * 3600).toString()
-                val ringing = client.from("pingchat_calls").select {
-                    filter {
-                        eq("callee_id", me)
-                        eq("status", "ringing")
-                        gt("created_at", cutoff)
-                    }
-                }.decodeList<CallRow>()
-                ringing.forEach { row ->
-                    // A row older than the 30s ring timeout is a call I
-                    // missed while the app was closed: it will never ring
-                    // now, so mark it missed and save my history entry.
-                    val created = TimeFormat.parse(row.createdAt)
-                    val ageSeconds = if (created == null) 0
-                        else java.time.Duration.between(created, Instant.now()).seconds
-                    if (ageSeconds >= CALL_TIMEOUT_MS / 1000) {
-                        markMissed(row.id)
-                        insertCallHistory(
-                            userId = me,
-                            callId = row.id,
-                            peerId = row.callerId,
-                            peerName = row.callerName,
-                            kind = row.kind,
-                            direction = "incoming",
-                            status = "missed",
-                            startedAt = null,
-                            endedAt = null,
-                            durationSeconds = null
-                        )
-                        return@forEach
-                    }
-                    val offer = row.offerSdp ?: return@forEach
-                    callPeers[row.id] = row.callerId
-                    emit(
-                        CallOfferPayload(
-                            callId = row.id,
-                            conversationId = row.conversationId,
-                            from = CallPeerInfo(row.callerId, row.callerName ?: ""),
-                            kind = row.kind,
-                            sdp = offer
-                        )
-                    )
-                }
-            } catch (e: Exception) {
-                // sweep is best-effort; live broadcasts still work
-            }
-        }
-        val channel = myChannel() ?: return@flow
-        channel.broadcastFlow<CallOfferPayload>("call-offer").collect { payload ->
+        val seen = mutableSetOf<String>()
+        suspend fun emitOffer(payload: CallOfferPayload) {
             callPeers[payload.callId] = payload.from.id
-            emit(payload)
+            if (seen.add(payload.callId)) emit(payload)
+        }
+        while (true) {
+            sweepRingingOffers().forEach { emitOffer(it) }
+            val channel = myChannel()
+            if (channel == null) {
+                delay(5_000)
+                continue
+            }
+            try {
+                merge(
+                    channel.broadcastFlow<CallOfferPayload>("call-offer"),
+                    flow {
+                        while (true) {
+                            delay(10_000)
+                            sweepRingingOffers().forEach { emit(it) }
+                        }
+                    }
+                ).collect { emitOffer(it) }
+            } catch (e: Exception) {
+                // collect ended (channel dropped) — loop re-subscribes
+            }
+            delay(5_000)
+        }
+    }
+
+    /**
+     * One sweep for still-ringing rows addressed to me (see
+     * [incomingOfferFlow]). Rows older than the 30s ring timeout are
+     * calls I missed while the app was closed: they will never ring
+     * now, so they are marked missed (with a history entry) and never
+     * returned. Best-effort — an empty list on any failure; live
+     * broadcasts still work.
+     */
+    private suspend fun sweepRingingOffers(): List<CallOfferPayload> {
+        val me = myId() ?: return emptyList()
+        return try {
+            val cutoff = Instant.now().minusSeconds(7 * 24 * 3600).toString()
+            val ringing = client.from("pingchat_calls").select {
+                filter {
+                    eq("callee_id", me)
+                    eq("status", "ringing")
+                    gt("created_at", cutoff)
+                }
+            }.decodeList<CallRow>()
+            val offers = mutableListOf<CallOfferPayload>()
+            ringing.forEach { row ->
+                val created = TimeFormat.parse(row.createdAt)
+                val ageSeconds = if (created == null) 0
+                    else java.time.Duration.between(created, Instant.now()).seconds
+                if (ageSeconds >= CALL_TIMEOUT_MS / 1000) {
+                    markMissed(row.id)
+                    insertCallHistory(
+                        userId = me,
+                        callId = row.id,
+                        peerId = row.callerId,
+                        peerName = row.callerName,
+                        kind = row.kind,
+                        direction = "incoming",
+                        status = "missed",
+                        startedAt = null,
+                        endedAt = null,
+                        durationSeconds = null
+                    )
+                    return@forEach
+                }
+                val offer = row.offerSdp ?: return@forEach
+                callPeers[row.id] = row.callerId
+                offers += CallOfferPayload(
+                    callId = row.id,
+                    conversationId = row.conversationId,
+                    from = CallPeerInfo(row.callerId, row.callerName ?: ""),
+                    kind = row.kind,
+                    sdp = offer
+                )
+            }
+            offers
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * v3.1.1: load one still-ringing call row by id — used when a call
+     * push arrives (PingChatMessagingService -> CallManager.onCallPush)
+     * so the phone rings immediately instead of waiting for the 10s
+     * sweep in [incomingOfferFlow]. Returns null when the row is gone,
+     * no longer ringing, has no offer SDP, or is older than the ring
+     * timeout (a stale row is the sweep's job to mark missed, never a
+     * ring). Best-effort — null on any failure.
+     */
+    suspend fun loadRingingOffer(callId: String): CallOfferPayload? {
+        return try {
+            val rows = client.from("pingchat_calls").select {
+                filter {
+                    eq("id", callId)
+                    eq("status", "ringing")
+                }
+            }.decodeList<CallRow>()
+            val row = rows.firstOrNull() ?: return null
+            val offer = row.offerSdp ?: return null
+            val created = TimeFormat.parse(row.createdAt)
+            val ageSeconds = if (created == null) 0
+                else java.time.Duration.between(created, Instant.now()).seconds
+            if (ageSeconds >= CALL_TIMEOUT_MS / 1000) return null
+            CallOfferPayload(
+                callId = row.id,
+                conversationId = row.conversationId,
+                from = CallPeerInfo(row.callerId, row.callerName ?: ""),
+                kind = row.kind,
+                sdp = offer
+            )
+        } catch (e: Exception) {
+            null
         }
     }
 
     /**
      * A ringing call that went away (caller hung up / call ended while we
      * were still ringing). Emits the call id to dismiss the dialog.
+     * Retries the subscribe like [incomingOfferFlow] instead of ending
+     * silently when the channel cannot be joined yet.
      */
     @OptIn(SupabaseInternal::class)
     fun incomingCancelFlow(): Flow<CallSignalPayload> = flow {
-        val channel = myChannel() ?: return@flow
-        merge(
-            channel.broadcastFlow<CallSignalPayload>("call-cancel"),
-            channel.broadcastFlow<CallSignalPayload>("call-end")
-        ).collect { emit(it) }
+        while (true) {
+            val channel = myChannel()
+            if (channel == null) {
+                delay(5_000)
+                continue
+            }
+            try {
+                merge(
+                    channel.broadcastFlow<CallSignalPayload>("call-cancel"),
+                    channel.broadcastFlow<CallSignalPayload>("call-end")
+                ).collect { emit(it) }
+            } catch (e: Exception) {
+            }
+            delay(5_000)
+        }
     }
 
     /** The callee's SDP answer for one call (caller side). */
     @OptIn(SupabaseInternal::class)
     fun answerFlow(callId: String): Flow<CallAnswerPayload> = flow {
-        val channel = myChannel() ?: return@flow
-        channel.broadcastFlow<CallAnswerPayload>("call-answer")
-            .filter { it.callId == callId }
-            .collect { emit(it) }
+        while (true) {
+            val channel = myChannel()
+            if (channel == null) {
+                delay(3_000)
+                continue
+            }
+            try {
+                channel.broadcastFlow<CallAnswerPayload>("call-answer")
+                    .filter { it.callId == callId }
+                    .collect { emit(it) }
+            } catch (e: Exception) {
+            }
+            delay(3_000)
+        }
     }
 
     /**
@@ -467,23 +586,43 @@ class CallRepository {
      */
     @OptIn(SupabaseInternal::class)
     fun callStatusFlow(callId: String): Flow<String> = flow {
-        val channel = myChannel() ?: return@flow
-        merge(
-            channel.broadcastFlow<CallSignalPayload>("call-decline")
-                .map { "declined" to it.callId },
-            channel.broadcastFlow<CallSignalPayload>("call-end")
-                .map { "ended" to it.callId }
-        ).filter { (_, id) -> id == callId }
-            .map { (status, _) -> status }
-            .collect { emit(it) }
+        while (true) {
+            val channel = myChannel()
+            if (channel == null) {
+                delay(3_000)
+                continue
+            }
+            try {
+                merge(
+                    channel.broadcastFlow<CallSignalPayload>("call-decline")
+                        .map { "declined" to it.callId },
+                    channel.broadcastFlow<CallSignalPayload>("call-end")
+                        .map { "ended" to it.callId }
+                ).filter { (_, id) -> id == callId }
+                    .map { (status, _) -> status }
+                    .collect { emit(it) }
+            } catch (e: Exception) {
+            }
+            delay(3_000)
+        }
     }
 
     /** The peer's ICE candidates for one call, in arrival order. */
     @OptIn(SupabaseInternal::class)
     fun candidatesFlow(callId: String, peerId: String): Flow<IceCandidatePayload> = flow {
-        val channel = myChannel() ?: return@flow
-        channel.broadcastFlow<IceCandidatePayload>("ice-candidate")
-            .filter { it.callId == callId }
-            .collect { emit(it) }
+        while (true) {
+            val channel = myChannel()
+            if (channel == null) {
+                delay(3_000)
+                continue
+            }
+            try {
+                channel.broadcastFlow<IceCandidatePayload>("ice-candidate")
+                    .filter { it.callId == callId }
+                    .collect { emit(it) }
+            } catch (e: Exception) {
+            }
+            delay(3_000)
+        }
     }
 }

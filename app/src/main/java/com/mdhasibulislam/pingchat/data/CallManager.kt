@@ -121,7 +121,7 @@ object CallManager {
     private val pendingCandidates = mutableListOf<IceCandidateJson>()
 
     /** Watch Realtime Broadcast for ringing calls addressed to me. */
-    fun start(context: Context, userId: String, prefs: Prefs) {
+    suspend fun start(context: Context, userId: String, prefs: Prefs) {
         if (started && myId == userId) return
         stop()
         started = true
@@ -132,8 +132,16 @@ object CallManager {
         signalJobs += scope.launch { repo.incomingCancelFlow().collect { onCancel(it) } }
     }
 
-    /** End any call and stop listening (sign-out). */
-    fun stop() {
+    /** End any call and stop listening (sign-out). Suspends until the
+     *  call channels are really dropped: stop() used to drop them in a
+     *  fire-and-forget launch, so a start() that followed immediately
+     *  (sign-out then sign-in in the same process) could subscribe its
+     *  fresh `calls:<myId>` channel and then have the still-pending
+     *  drop unsubscribe it again — the incoming-call watch sat on a
+     *  dead channel forever, with no error and no retry. Awaiting the
+     *  close here removes that race; both call sites (MainActivity's
+     *  LaunchedEffect, and start() above) already run in a coroutine. */
+    suspend fun stop() {
         val s = _session.value
         if (s != null && currentPeerId != null) {
             val callId = s.callId
@@ -146,11 +154,9 @@ object CallManager {
                 }
             }
         }
-        scope.launch {
-            try {
-                repo.closeChannels()
-            } catch (e: Exception) {
-            }
+        try {
+            repo.closeChannels()
+        } catch (e: Exception) {
         }
         started = false
         signalJobs.forEach { it.cancel() }
@@ -165,8 +171,16 @@ object CallManager {
         myId = null
     }
 
-    /** Per-call listeners: answer (caller only), ICE candidates, end/decline. */
+    /** Per-call listeners: answer (caller only), ICE candidates, end/decline.
+     *  Idempotent per callId: the callee attaches these when the offer
+     *  rings (onOffer) AND acceptCall attaches them again — without the
+     *  guard the candidate/status flows would be collected twice. */
+    private var listenersCallId: String? = null
+
     private fun attachCallListeners(callId: String, peerId: String, outgoing: Boolean) {
+        if (listenersCallId == callId) return
+        detachCallListeners()
+        listenersCallId = callId
         if (outgoing) {
             callSignalJobs += scope.launch { repo.answerFlow(callId).collect { onAnswer(it) } }
         }
@@ -177,6 +191,7 @@ object CallManager {
     private fun detachCallListeners() {
         callSignalJobs.forEach { it.cancel() }
         callSignalJobs.clear()
+        listenersCallId = null
     }
 
     // ---------- outgoing call ----------
@@ -192,8 +207,12 @@ object CallManager {
         // v3.1.0 Privacy — the CALLEE's Calls setting decides who may
         // call them (Everybody / Friends / Nobody); blocked either way
         // is also refused here, before any WebRTC setup or ringing.
+        // Bounded: the check is several sequential network calls, and
+        // without a timeout a stalled network left the tap doing
+        // nothing at all (no Calling screen, no error) indefinitely.
+        // A timeout fails OPEN, exactly like a check failure.
         val allowed = try {
-            privacyRepo.canCallUser(peer.id)
+            withTimeoutOrNull(10_000) { privacyRepo.canCallUser(peer.id) } ?: true
         } catch (e: Exception) {
             true // on a check failure, do not block the call
         }
@@ -293,6 +312,27 @@ object CallManager {
         return null
     }
 
+    /**
+     * v3.1.1: a call push arrived (FCM data message, type "call") —
+     * load that call's ringing row right now and ring immediately
+     * instead of waiting for the 10s sweep in incomingOfferFlow.
+     * No-op when not started, already in a call, or already ringing
+     * for this call; onOffer handles busy / privacy / duplicate cases.
+     */
+    fun onCallPush(callId: String) {
+        if (!started) return
+        scope.launch {
+            if (_incoming.value?.callId == callId) return@launch
+            if (_session.value != null) return@launch
+            val offer = try {
+                repo.loadRingingOffer(callId)
+            } catch (e: Exception) {
+                null
+            } ?: return@launch
+            onOffer(offer)
+        }
+    }
+
     // ---------- incoming call ----------
 
     private fun onOffer(payload: CallOfferPayload) {
@@ -316,8 +356,10 @@ object CallManager {
             // (Everybody / Friends / Nobody; blocked callers too). A
             // refused call is declined silently for the caller, never
             // rings here, and leaves no history row on my side.
+            // Bounded like the caller-side check: a stalled network
+            // must not leave a ringing call unanswered forever.
             val allowed = try {
-                privacyRepo.canReceiveCallFrom(payload.from.id)
+                withTimeoutOrNull(10_000) { privacyRepo.canReceiveCallFrom(payload.from.id) } ?: true
             } catch (e: Exception) {
                 true // on a check failure, let the call ring
             }
@@ -337,6 +379,17 @@ object CallManager {
             currentDirection = "incoming"
             currentOffer = payload.sdp
             callRowExists = true
+            // Listen for this call's ICE candidates + end/decline NOW,
+            // while it is still ringing — not only in acceptCall. The
+            // caller's ICE gathering runs during createOffer /
+            // setLocalDescription, i.e. entirely inside the ringing
+            // window, and broadcast is fire-and-forget: candidates sent
+            // before acceptCall attached the listener were lost, so the
+            // callee's peer connection never learned the caller's
+            // (relay) addresses and media could never connect.
+            // attachCallListeners is idempotent per callId, so the
+            // acceptCall attach below is a harmless no-op.
+            attachCallListeners(payload.callId, payload.from.id, outgoing = false)
             _incoming.value = IncomingCall(
                 callId = payload.callId,
                 conversationId = payload.conversationId,
@@ -538,8 +591,13 @@ object CallManager {
     }
 
     private fun onCandidate(payload: IceCandidatePayload) {
-        val s = _session.value ?: return
-        if (s.callId != payload.callId) return
+        // Gated on the current call, NOT on _session: during ringing
+        // the callee has no session yet, and candidates arriving then
+        // must be queued (pendingCandidates) for acceptCall to flush —
+        // dropping them here was the same lost-candidates bug as the
+        // missing listener (see onOffer).
+        val callId = currentCallId ?: return
+        if (payload.callId != callId) return
         val pc = peerConnection
         val cand = IceCandidate(
             payload.candidate.sdpMid,

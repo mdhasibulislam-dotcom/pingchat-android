@@ -52,8 +52,17 @@ class PingChatMessagingService : FirebaseMessagingService() {
         // push in the first place; this is the second layer, for any push
         // that still arrives. Calls are NOT gated here — CallManager
         // handles incoming calls, not this toggle.
-        if (!Prefs(applicationContext).notificationsEnabled) return
+        // v3.1.1: a call push must reach the ringing UI even when the
+        // notifications toggle is OFF (calls are not gated by it) and
+        // even when the app is already open — route it to CallManager
+        // first, before the notification gate below. The notification
+        // itself still follows the toggle.
         val data = message.data
+        val type = data["type"] ?: "message"
+        if (type == "call") {
+            data["callId"]?.let { CallManager.onCallPush(it) }
+        }
+        if (!Prefs(applicationContext).notificationsEnabled) return
         // v3.1.0: muted chats send no notification. The muted ids are
         // cached in Prefs (see Prefs.mutedConversationIds) because this
         // service has no signed-in Supabase session to query with.
@@ -65,7 +74,6 @@ class PingChatMessagingService : FirebaseMessagingService() {
         val title = data["title"] ?: message.notification?.title ?: return
         val body = data["body"] ?: message.notification?.body ?: ""
         val senderId = data["senderId"]
-        val type = data["type"] ?: "message"
         showNotification(title, body, conversationId, senderId, type)
     }
 
