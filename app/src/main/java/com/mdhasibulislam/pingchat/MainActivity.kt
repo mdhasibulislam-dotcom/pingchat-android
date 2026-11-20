@@ -44,17 +44,24 @@ import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.Supabase
 import com.mdhasibulislam.pingchat.ui.screens.ActiveCallScreen
+import com.mdhasibulislam.pingchat.ui.screens.AppearanceScreen
+import com.mdhasibulislam.pingchat.ui.screens.ChangePasswordScreen
 import com.mdhasibulislam.pingchat.ui.screens.ChatScreen
+import com.mdhasibulislam.pingchat.ui.screens.EditProfileScreen
 import com.mdhasibulislam.pingchat.ui.screens.ForgotPasswordScreen
 import com.mdhasibulislam.pingchat.ui.screens.IncomingCallDialog
 import com.mdhasibulislam.pingchat.ui.screens.LoginScreen
 import com.mdhasibulislam.pingchat.ui.screens.MainScreen
+import com.mdhasibulislam.pingchat.ui.screens.MfaChallengeScreen
+import com.mdhasibulislam.pingchat.ui.screens.NotificationsScreen
 import com.mdhasibulislam.pingchat.ui.screens.PrivacyPolicyScreen
 import com.mdhasibulislam.pingchat.ui.screens.PrivacySecurityScreen
 import com.mdhasibulislam.pingchat.ui.screens.RegisterScreen
 import com.mdhasibulislam.pingchat.ui.screens.SettingsScreen
+import com.mdhasibulislam.pingchat.ui.screens.TwoFactorScreen
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.PingChatTheme
+import com.mdhasibulislam.pingchat.ui.theme.accentColorFor
 import com.mdhasibulislam.pingchat.ui.viewmodel.AuthViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.CallViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
@@ -116,6 +123,9 @@ class MainActivity : ComponentActivity() {
             val prefs = remember { Prefs(applicationContext) }
             var darkTheme by remember { mutableStateOf(prefs.darkTheme) }
             val isLoggedIn by SessionManager.isLoggedIn.collectAsState()
+            // v3.2.0 Two-factor: while this is true the user is signed in
+            // but only AAL1 — the code prompt, not the chats.
+            val mfaPending by SessionManager.mfaChallengePending.collectAsState()
             val navController = rememberNavController()
 
             LaunchedEffect(Unit) {
@@ -138,8 +148,8 @@ class MainActivity : ComponentActivity() {
             val pushPermission = rememberLauncherForActivityResult(
                 ActivityResultContracts.RequestPermission()
             ) { /* asked once — granted or not, we do not ask again */ }
-            LaunchedEffect(isLoggedIn) {
-                if (isLoggedIn == true && !prefs.pushPrompted &&
+            LaunchedEffect(isLoggedIn, mfaPending) {
+                if (isLoggedIn == true && !mfaPending && !prefs.pushPrompted &&
                     Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                     ContextCompat.checkSelfPermission(
                         applicationContext, Manifest.permission.POST_NOTIFICATIONS
@@ -151,18 +161,31 @@ class MainActivity : ComponentActivity() {
             }
 
             // Route the user to the right screen when the session state changes.
-            LaunchedEffect(isLoggedIn) {
+            // v3.2.0 Two-factor: while the MFA challenge is pending, the
+            // user goes to "mfa_challenge" instead of "main" — an AAL1
+            // session never reaches the chats without its code.
+            LaunchedEffect(isLoggedIn, mfaPending) {
                 // The NavHost is only composed once the session has resolved
                 // (isLoggedIn != null), and it sets the graph in its own
                 // LaunchedEffect — which can run AFTER this one. Until the
                 // graph is set, navigate() throws IllegalArgumentException
                 // (v3.0.0 launch crash). currentDestination is null until
                 // the graph exists, so skip: the NavHost's startDestination
-                // already shows the right first screen ("main" / "auth").
+                // already shows the right first screen ("main" / "auth" /
+                // "mfa_challenge").
                 if (navController.currentDestination == null) return@LaunchedEffect
-                when (isLoggedIn) {
-                    true -> {
-                        if (navController.currentDestination?.route == "auth") {
+                when {
+                    isLoggedIn == true && mfaPending -> {
+                        if (navController.currentDestination?.route != "mfa_challenge") {
+                            navController.navigate("mfa_challenge") {
+                                popUpTo("auth") { inclusive = true }
+                            }
+                        }
+                    }
+                    isLoggedIn == true -> {
+                        if (navController.currentDestination?.route == "auth" ||
+                            navController.currentDestination?.route == "mfa_challenge"
+                        ) {
                             navController.navigate("main") {
                                 popUpTo("auth") { inclusive = true }
                             }
@@ -175,23 +198,27 @@ class MainActivity : ComponentActivity() {
                             navController.navigate("chat/$chatId")
                         }
                     }
-                    false -> {
+                    isLoggedIn == false -> {
                         if (navController.currentDestination?.route != "auth") {
                             navController.navigate("auth") {
                                 popUpTo(0) { inclusive = true }
                             }
                         }
                     }
-                    null -> { /* still loading the saved session */ }
+                    else -> { /* still loading the saved session */ }
                 }
             }
             // Notification tap / Open chat action while the app is already
             // running (v2.0.8): onNewIntent sets openChatIdState, this
-            // opens that chat.
+            // opens that chat. v3.2.0 Two-factor: gated on !mfaPending —
+            // without this, tapping a message notification while the
+            // code prompt is showing would open the chat straight past
+            // the MFA gate (the routing effect above opens the pending
+            // chat after verification instead).
             val openChatId by openChatIdState
             val openFriendRequests by openFriendRequestsState
-            LaunchedEffect(openChatId) {
-                if (isLoggedIn == true && openChatId != null &&
+            LaunchedEffect(openChatId, mfaPending) {
+                if (isLoggedIn == true && !mfaPending && openChatId != null &&
                     navController.currentDestination != null &&
                     navController.currentDestination?.route != "chat/$openChatId"
                 ) {
@@ -200,7 +227,7 @@ class MainActivity : ComponentActivity() {
                 }
             }
 
-            PingChatTheme(darkTheme = darkTheme) {
+            PingChatTheme(darkTheme = darkTheme, accent = accentColorFor(prefs.accentColor), fontScale = prefs.fontSize) {
                 Surface(modifier = Modifier.fillMaxSize()) {
                     // Call overlays sit above every screen (chats, tabs,
                     // auth): an incoming call must ring even while the
@@ -236,7 +263,7 @@ class MainActivity : ComponentActivity() {
                             }
                         }
                     } else {
-                    NavHost(navController = navController, startDestination = if (isLoggedIn == true) "main" else "auth") {
+                    NavHost(navController = navController, startDestination = if (isLoggedIn == true) (if (mfaPending) "mfa_challenge" else "main") else "auth") {
                         composable("auth") {
                             val authViewModel: AuthViewModel = viewModel()
                             var authScreen by remember { mutableStateOf("login") }
@@ -288,6 +315,14 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                         }
+                        // v3.2.0: Two-factor login challenge — the start
+                        // destination (and the route) while the session is
+                        // AAL1. Verifying flips mfaChallengePending off
+                        // and the routing effect above takes the user to
+                        // "main"; cancelling signs out (routes to "auth").
+                        composable("mfa_challenge") {
+                            MfaChallengeScreen()
+                        }
                         composable("main") {
                             MainScreen(
                                 onOpenChat = { id -> navController.navigate("chat/$id") },
@@ -302,7 +337,9 @@ class MainActivity : ComponentActivity() {
                                 onPeopleTabConsumed = { openFriendRequestsState.value = false },
                                 // v3.1.0 (worker A): Settings > Privacy & Security.
                                 onPrivacySecurityClick = { navController.navigate("privacy_security") },
-                                onPrivacyPolicyClick = { navController.navigate("privacy_policy") }
+                                onPrivacyPolicyClick = { navController.navigate("privacy_policy") },
+                                // v3.2.0 (worker B): profile header opens Edit Profile.
+                                onEditProfileClick = { navController.navigate("edit_profile") }
                             )
                         }
                         composable("settings") {
@@ -316,16 +353,61 @@ class MainActivity : ComponentActivity() {
                                     prefs.darkTheme = enabled
                                 },
                                 onPrivacySecurityClick = { navController.navigate("privacy_security") },
-                                onPrivacyPolicyClick = { navController.navigate("privacy_policy") }
+                                onPrivacyPolicyClick = { navController.navigate("privacy_policy") },
+                                // v3.2.0 (worker B): Settings rows (worker C adds the params).
+                                onEditProfileClick = { navController.navigate("edit_profile") },
+                                onNotificationsClick = { navController.navigate("notifications") },
+                                onAppearanceClick = { navController.navigate("appearance") }
                             )
                         }
                         // v3.1.0: Privacy & Security (worker A) — opened from
                         // Settings > Privacy & Security. The Privacy Policy
                         // row at its bottom opens "privacy_policy" (worker G).
+                        // v3.2.0 (worker B): Change Password + Two-Factor
+                        // Authentication open from this screen's rows.
                         composable("privacy_security") {
                             PrivacySecurityScreen(
                                 onBack = { navController.popBackStack() },
-                                onOpenPrivacyPolicy = { navController.navigate("privacy_policy") }
+                                onOpenPrivacyPolicy = { navController.navigate("privacy_policy") },
+                                onChangePasswordClick = { navController.navigate("change_password") },
+                                onTwoFactorClick = { navController.navigate("two_factor") }
+                            )
+                        }
+                        // v3.2.0 (worker B): Change Password (mockup screen 4).
+                        composable("change_password") {
+                            ChangePasswordScreen(onBack = { navController.popBackStack() })
+                        }
+                        // v3.2.0 (worker B): Two-Factor Authentication (real TOTP).
+                        composable("two_factor") {
+                            TwoFactorScreen(onBack = { navController.popBackStack() })
+                        }
+                        // v3.2.0 (worker A defines this screen): Edit Profile.
+                        composable("edit_profile") {
+                            val profileViewModel: ProfileViewModel = viewModel()
+                            EditProfileScreen(
+                                viewModel = profileViewModel,
+                                onBack = { navController.popBackStack() }
+                            )
+                        }
+                        // v3.2.0 (worker C defines this screen): Notifications.
+                        composable("notifications") {
+                            val profileViewModel: ProfileViewModel = viewModel()
+                            NotificationsScreen(
+                                onBack = { navController.popBackStack() },
+                                prefs = prefs,
+                                viewModel = profileViewModel
+                            )
+                        }
+                        // v3.2.0 (worker C defines this screen): Appearance.
+                        composable("appearance") {
+                            AppearanceScreen(
+                                onBack = { navController.popBackStack() },
+                                prefs = prefs,
+                                darkTheme = darkTheme,
+                                onDarkThemeChange = { enabled ->
+                                    darkTheme = enabled
+                                    prefs.darkTheme = enabled
+                                }
                             )
                         }
                         // v3.1.0: Privacy Policy (worker G) — opened from
@@ -342,7 +424,11 @@ class MainActivity : ComponentActivity() {
                                 // v3.1.1: let "Message" from a nested public
                                 // profile and a just-created group open that
                                 // chat (ChatScreen's onOpenChat param).
-                                onOpenChat = { id -> navController.navigate("chat/$id") }
+                                onOpenChat = { id -> navController.navigate("chat/$id") },
+                                // v3.2.0 (worker F): the peer profile's
+                                // "Privacy & Security" row opens the global
+                                // Privacy & Security screen.
+                                onOpenPrivacySecurity = { navController.navigate("privacy_security") }
                             )
                         }
                     }
