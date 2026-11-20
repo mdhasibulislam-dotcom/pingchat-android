@@ -156,6 +156,19 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     private var typingLastSentAt = 0L
     private var visible = false
 
+    /**
+     * v3.2.0 Privacy — my own Read Receipts / Typing Indicator
+     * settings, loaded once when the chat opens (fresh per chat: the
+     * ViewModel is created per conversation). Permissive defaults
+     * (true) until the load finishes; markRead waits for the load so
+     * an OFF setting is never missed by a mark that fires first.
+     * Loaded in its own coroutine so a slow settings read never
+     * delays the messages.
+     */
+    private var readReceiptsEnabled = true
+    private var typingIndicatorEnabled = true
+    private var privacySettingsLoaded = false
+
     // Voice media: recorder + player live here so a rotation or a
     // re-render never loses them.
     private var recorder: MediaRecorder? = null
@@ -165,6 +178,20 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     private var playingId: String? = null
 
     init {
+        // v3.2.0 Privacy — load my Read Receipts / Typing Indicator
+        // settings (see the flags above). Separate coroutine: a slow
+        // settings read must never delay the messages below.
+        viewModelScope.launch {
+            try {
+                val settings = privacyRepo.loadMySettings()
+                readReceiptsEnabled = settings.readReceipts
+                typingIndicatorEnabled = settings.typingIndicator
+            } catch (e: Exception) {
+                // permissive defaults — the settings stay on
+            } finally {
+                privacySettingsLoaded = true
+            }
+        }
         viewModelScope.launch {
             val conv = repo.loadConversation(conversationId)
             if (conv?.isGroup == true) {
@@ -629,6 +656,10 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     // ---------- typing (leading-edge send + throttled 2.5s, like the web app) ----------
 
     fun onTyping() {
+        // v3.2.0 Privacy — Typing Indicator OFF: broadcast nothing
+        // (and wait for the settings load first, so an OFF setting is
+        // never missed by a broadcast that fires first).
+        if (!privacySettingsLoaded || !typingIndicatorEnabled) return
         val now = System.currentTimeMillis()
         if (now - typingLastSentAt >= 2500) {
             // Leading edge: broadcast immediately on the first keystroke.
@@ -666,6 +697,9 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
     fun onTypingStopped() {
         typingDebounceJob?.cancel()
         typingLastSentAt = 0
+        // v3.2.0 Privacy — Typing Indicator OFF: nothing was ever
+        // broadcast, so there is no "stop" to send either.
+        if (!privacySettingsLoaded || !typingIndicatorEnabled) return
         val me = repo.myId() ?: return
         viewModelScope.launch {
             repo.sendTypingStop(conversationId, TypingPayload(me))
@@ -690,6 +724,14 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
      */
     private fun markReadIfVisible() {
         if (!visible) return
+        // v3.2.0 Privacy — Read Receipts OFF: never write last_read_at,
+        // so the peer sees no read ticks. Waits for the settings load
+        // first, so an OFF setting is never missed by a mark that fires
+        // first. NOTE: the same last_read_at drives MY chats-list
+        // unread badge, so with receipts off the badge for this chat
+        // only clears when receipts are turned back on and the chat is
+        // opened again — there is no separate local-only read flag.
+        if (!privacySettingsLoaded || !readReceiptsEnabled) return
         val readUpTo = _messages.value.mapNotNull { TimeFormat.parse(it.createdAt) }
             .maxOrNull() ?: Instant.now()
         viewModelScope.launch {

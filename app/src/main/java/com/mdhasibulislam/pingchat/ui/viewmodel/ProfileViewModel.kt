@@ -242,6 +242,32 @@ class ProfileViewModel : ViewModel() {
         }
     }
 
+    /**
+     * Remove the profile photo (v3.2.0): set avatar_url to NULL in
+     * Supabase and clear the local profile, so the photo is really
+     * gone (Avatar falls back to initials). The old Storage file is
+     * left unreferenced. The screen asks for confirmation first.
+     */
+    fun removeAvatar() {
+        val me = repo.myId() ?: return
+        viewModelScope.launch {
+            _uploading.value = true
+            val updated = try {
+                repo.clearAvatarUrl(me)
+            } catch (e: Exception) {
+                _error.value = AuthRepository.friendlyError(e)
+                null
+            }
+            _uploading.value = false
+            if (updated != null) {
+                SessionManager.setProfile(updated)
+                _info.value = "Profile photo removed."
+            } else if (_error.value == null) {
+                _error.value = "Could not remove the photo. Check your connection and try again."
+            }
+        }
+    }
+
     fun changePassword(newPassword: String) {
         if (newPassword.length < 8) {
             _error.value = "Password must be at least 8 characters."
