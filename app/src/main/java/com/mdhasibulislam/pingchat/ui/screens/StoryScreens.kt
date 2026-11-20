@@ -236,10 +236,15 @@ fun StoryStrip() {
 
     val myGroup = groups.firstOrNull { it.isMine }
     val friendGroups = groups.filter { !it.isMine }
+    // v3.2.1: "See all" shows only when there are many story owners
+    // (mine + friends with active stories) — more than 5. With 5 or
+    // fewer the link is hidden entirely; the "Stories" title stays.
+    val storyOwnerCount = (if (myGroup != null) 1 else 0) + friendGroups.size
 
     Column(modifier = Modifier.fillMaxWidth()) {
-        // v3.2.0: "Stories" title row (mockup) with a working "See all >"
-        // link — it opens a bottom sheet of all active story owners.
+        // v3.2.0: "Stories" title row (mockup). v3.2.1: the "See all >"
+        // link shows only when there are more than 5 story owners —
+        // it opens a bottom sheet of all active story owners.
         Row(
             modifier = Modifier
                 .fillMaxWidth()
@@ -254,22 +259,26 @@ fun StoryStrip() {
                 color = colors.text,
                 modifier = Modifier.weight(1f)
             )
-            Row(
-                modifier = Modifier.clickable { showAllStories = true },
-                verticalAlignment = Alignment.CenterVertically
-            ) {
-                Text(
-                    text = "See all",
-                    style = MaterialTheme.typography.bodyMedium,
-                    fontWeight = FontWeight.SemiBold,
-                    color = Emerald
-                )
-                Icon(
-                    Icons.Default.ChevronRight,
-                    contentDescription = "See all stories",
-                    tint = Emerald,
-                    modifier = Modifier.size(18.dp)
-                )
+            // v3.2.1: hidden entirely with 5 or fewer story owners
+            // (no placeholder, no empty space where it was).
+            if (storyOwnerCount > 5) {
+                Row(
+                    modifier = Modifier.clickable { showAllStories = true },
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Text(
+                        text = "See all",
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = FontWeight.SemiBold,
+                        color = Emerald
+                    )
+                    Icon(
+                        Icons.Default.ChevronRight,
+                        contentDescription = "See all stories",
+                        tint = Emerald,
+                        modifier = Modifier.size(18.dp)
+                    )
+                }
             }
         }
         LazyRow(

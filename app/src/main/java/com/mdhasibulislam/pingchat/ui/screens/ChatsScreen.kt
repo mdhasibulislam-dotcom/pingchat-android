@@ -8,6 +8,7 @@ import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -269,7 +270,7 @@ fun ChatsScreen(
                         )
                     }
                 } else {
-                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 110.dp)) {
                         items(activeItems, key = { it.conversation.id }) { item ->
                             ActiveRow(
                                 item = item,
@@ -279,7 +280,7 @@ fun ChatsScreen(
                     }
                 }
             } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 110.dp)) {
                     if (filtered.isEmpty() && filteredArchived.isEmpty()) {
                         item {
                             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -340,9 +341,10 @@ fun ChatsScreen(
             }
         }
 
-        // v3.2.0 FAB (mockup): green circle, bottom-right, floating
-        // above the bottom nav (88.dp bottom padding). Opens the
-        // EXISTING new-chat/group flow (showCreateGroup dialog).
+        // v3.2.1 FAB: green circle, bottom-right, floating just above
+        // the FLOATING bottom bar — 14dp bar bottom margin + 80dp bar
+        // height + 16dp gap = 110dp bottom padding. Opens the EXISTING
+        // new-chat/group flow (showCreateGroup dialog).
         FloatingActionButton(
             onClick = { showCreateGroup = true },
             containerColor = Emerald,
@@ -350,7 +352,7 @@ fun ChatsScreen(
             shape = CircleShape,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 88.dp)
+                .padding(end = 16.dp, bottom = 110.dp)
         ) {
             Icon(Icons.Default.Group, contentDescription = "New chat or group")
         }

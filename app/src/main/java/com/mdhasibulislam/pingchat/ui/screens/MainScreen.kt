@@ -5,19 +5,14 @@ import android.content.pm.PackageManager
 import android.widget.Toast
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.background
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
-import androidx.compose.foundation.layout.Row
-import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
-import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubble
-import androidx.compose.material.icons.filled.DarkMode
-import androidx.compose.material.icons.filled.LightMode
 import androidx.compose.material.icons.filled.People
 import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.Settings
@@ -25,16 +20,13 @@ import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.Settings
-import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
-import androidx.compose.material3.IconButton
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.NavigationBarItemDefaults
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
-import androidx.compose.material3.TopAppBar
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -45,12 +37,10 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
-import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mdhasibulislam.pingchat.data.FriendState
@@ -58,18 +48,15 @@ import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.data.Profile
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.VoicePlaybackManager
-import com.mdhasibulislam.pingchat.ui.components.Avatar
-import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.components.VoiceMiniPlayer
-import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.ChatsViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.PeopleViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
 
-/** Main app shell: top bar + bottom tabs (Chats / Calls / People / Settings).
- *  The top-bar avatar opens my Profile; the bottom bar's last tab is Settings. */
-@OptIn(ExperimentalMaterial3Api::class)
+/** Main app shell: bottom tabs (Chats / Calls / People / Settings).
+ *  No top bar — each tab owns its own header (the Chats tab header's
+ *  avatar opens my Profile); the bottom bar's last tab is Settings. */
 @Composable
 fun MainScreen(
     onOpenChat: (String) -> Unit,
@@ -103,7 +90,6 @@ fun MainScreen(
     val chatsViewModel: ChatsViewModel = viewModel()
     val peopleViewModel: PeopleViewModel = viewModel()
     val profileViewModel: ProfileViewModel = viewModel()
-    val myProfile by SessionManager.profile.collectAsState()
     val onlineIds by SessionManager.onlineIds.collectAsState()
     val colors = pingChatColors
 
@@ -185,147 +171,24 @@ fun MainScreen(
     // the same PeopleViewModel instance for the friend actions.
     var preview by remember { mutableStateOf<Pair<Profile, FriendState>?>(null) }
 
-    Scaffold(
-        topBar = {
-            TopAppBar(
-                title = {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
-                            modifier = Modifier
-                                .size(36.dp)
-                                .clip(RoundedCornerShape(10.dp))
-                                .background(Emerald),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Text("P", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 20.sp)
-                        }
-                        Spacer(Modifier.size(8.dp))
-                        Text(
-                            "PingChat",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 20.sp,
-                            color = colors.text
-                        )
-                    }
-                },
-                actions = {
-                    IconButton(onClick = { onDarkThemeChange(!darkTheme) }) {
-                        Icon(
-                            imageVector = if (darkTheme) Icons.Default.LightMode else Icons.Default.DarkMode,
-                            contentDescription = if (darkTheme) "Light theme" else "Dark theme",
-                            tint = colors.text
-                        )
-                    }
-                    Avatar(
-                        profile = myProfile,
-                        size = AvatarSize.SM,
-                        modifier = Modifier
-                            .padding(end = 8.dp)
-                            .clickable { showProfile = true }
-                    )
-                }
-            )
-        },
-        bottomBar = {
-            // Messenger-style bottom bar: plain background, thin top line, no
-            // pill behind the selected icon — selected tab is a filled dark
-            // icon, unselected tabs are grey outline icons.
-            Column {
-                // v3.1.0 (worker D): while a voice message plays — even after
-                // leaving the chat — a compact player sits above the bottom
-                // bar. Tap it to jump back to that chat. Renders nothing
-                // when nothing is playing.
-                VoiceMiniPlayer(
-                    label = "Voice message",
-                    onTap = {
-                        playbackState.conversationId?.let { onOpenChat(it) }
-                    }
-                )
-                HorizontalDivider(color = colors.border)
-                NavigationBar(
-                    containerColor = colors.card,
-                    tonalElevation = 0.dp
-                ) {
-                    val navColors = NavigationBarItemDefaults.colors(
-                        indicatorColor = Color.Transparent,
-                        selectedIconColor = colors.text,
-                        selectedTextColor = colors.text,
-                        unselectedIconColor = colors.muted,
-                        unselectedTextColor = colors.muted
-                    )
-                    NavigationBarItem(
-                        selected = tab == 0 && !showProfile,
-                        onClick = { tab = 0; showProfile = false },
-                        icon = {
-                            Icon(
-                                if (tab == 0) Icons.Default.ChatBubble else Icons.Outlined.ChatBubbleOutline,
-                                contentDescription = "Chats"
-                            )
-                        },
-                        label = {
-                            Text(
-                                "Chats",
-                                fontWeight = if (tab == 0) FontWeight.Bold else FontWeight.Normal
-                            )
-                        },
-                        colors = navColors
-                    )
-                    NavigationBarItem(
-                        selected = tab == 1 && !showProfile,
-                        onClick = { tab = 1; showProfile = false },
-                        icon = {
-                            Icon(
-                                if (tab == 1) Icons.Default.Phone else Icons.Outlined.Call,
-                                contentDescription = "Calls"
-                            )
-                        },
-                        label = {
-                            Text(
-                                "Calls",
-                                fontWeight = if (tab == 1) FontWeight.Bold else FontWeight.Normal
-                            )
-                        },
-                        colors = navColors
-                    )
-                    NavigationBarItem(
-                        selected = tab == 2 && !showProfile,
-                        onClick = { tab = 2; showProfile = false },
-                        icon = {
-                            Icon(
-                                if (tab == 2) Icons.Default.People else Icons.Outlined.Group,
-                                contentDescription = "People"
-                            )
-                        },
-                        label = {
-                            Text(
-                                "People",
-                                fontWeight = if (tab == 2) FontWeight.Bold else FontWeight.Normal
-                            )
-                        },
-                        colors = navColors
-                    )
-                    NavigationBarItem(
-                        selected = tab == 3 && !showProfile,
-                        onClick = { tab = 3; showProfile = false },
-                        icon = {
-                            Icon(
-                                if (tab == 3) Icons.Default.Settings else Icons.Outlined.Settings,
-                                contentDescription = "Settings"
-                            )
-                        },
-                        label = {
-                            Text(
-                                "Settings",
-                                fontWeight = if (tab == 3) FontWeight.Bold else FontWeight.Normal
-                            )
-                        },
-                        colors = navColors
-                    )
-                }
-            }
-        }
-    ) { padding ->
-        Box(modifier = Modifier.padding(padding)) {
+    // v3.2.1: no top bar — the Chats tab owns its header (logo + search
+    // + avatar, which opens the own profile), and Calls / People /
+    // Settings each have their own in-content title. The old TopAppBar
+    // duplicated the Chats header and carried the dark-mode toggle,
+    // which now lives only in Settings > Appearance.
+    // v3.2.1: the bottom nav is a FLOATING pill bar (Telegram-style),
+    // drawn OVER the tab content instead of a Scaffold bottomBar, so
+    // lists scroll behind it. Rounded 28dp corners, 16dp side margins,
+    // 14dp bottom margin, shadow so it visibly floats. The bar itself
+    // is added after the tab content below.
+    Scaffold { padding ->
+        Box(
+            modifier = Modifier
+                .padding(padding)
+                .fillMaxSize()
+        ) {
+            // Tab content fills the whole screen.
+            Box(modifier = Modifier.fillMaxSize()) {
             // v3.1.0 (worker F): full public profile screen. The friend
             // state is read live from the statuses flow, so Accept/Decline
             // from inside the profile updates the buttons immediately.
@@ -384,8 +247,116 @@ fun MainScreen(
                     onEditProfileClick = onEditProfileClick
                 )
             }
-        }
-    }
+            // v3.2.1: floating bottom bar overlay (Telegram-style) —
+            // always on top of the tab content; the lists scroll behind
+            // it (each list carries ~110dp bottom padding so its last
+            // row is never hidden by the bar).
+            Column(
+                modifier = Modifier
+                    .align(Alignment.BottomCenter)
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, bottom = 14.dp)
+            ) {
+                // v3.1.0 (worker D): while a voice message plays — even
+                // after leaving the chat — a compact player sits above
+                // the bottom bar. Tap it to jump back to that chat.
+                // Renders nothing when nothing is playing.
+                VoiceMiniPlayer(
+                    label = "Voice message",
+                    onTap = {
+                        playbackState.conversationId?.let { onOpenChat(it) }
+                    }
+                )
+                Surface(
+                    shape = RoundedCornerShape(28.dp),
+                    color = colors.card,
+                    shadowElevation = 8.dp
+                ) {
+                    NavigationBar(
+                        containerColor = Color.Transparent,
+                        tonalElevation = 0.dp
+                    ) {
+                        val navColors = NavigationBarItemDefaults.colors(
+                            indicatorColor = Color.Transparent,
+                            selectedIconColor = colors.text,
+                            selectedTextColor = colors.text,
+                            unselectedIconColor = colors.muted,
+                            unselectedTextColor = colors.muted
+                        )
+                        NavigationBarItem(
+                            selected = tab == 0 && !showProfile,
+                            onClick = { tab = 0; showProfile = false },
+                            icon = {
+                                Icon(
+                                    if (tab == 0) Icons.Default.ChatBubble else Icons.Outlined.ChatBubbleOutline,
+                                    contentDescription = "Chats"
+                                )
+                            },
+                            label = {
+                                Text(
+                                    "Chats",
+                                    fontWeight = if (tab == 0) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = navColors
+                        )
+                        NavigationBarItem(
+                            selected = tab == 1 && !showProfile,
+                            onClick = { tab = 1; showProfile = false },
+                            icon = {
+                                Icon(
+                                    if (tab == 1) Icons.Default.Phone else Icons.Outlined.Call,
+                                    contentDescription = "Calls"
+                                )
+                            },
+                            label = {
+                                Text(
+                                    "Calls",
+                                    fontWeight = if (tab == 1) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = navColors
+                        )
+                        NavigationBarItem(
+                            selected = tab == 2 && !showProfile,
+                            onClick = { tab = 2; showProfile = false },
+                            icon = {
+                                Icon(
+                                    if (tab == 2) Icons.Default.People else Icons.Outlined.Group,
+                                    contentDescription = "People"
+                                )
+                            },
+                            label = {
+                                Text(
+                                    "People",
+                                    fontWeight = if (tab == 2) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = navColors
+                        )
+                        NavigationBarItem(
+                            selected = tab == 3 && !showProfile,
+                            onClick = { tab = 3; showProfile = false },
+                            icon = {
+                                Icon(
+                                    if (tab == 3) Icons.Default.Settings else Icons.Outlined.Settings,
+                                    contentDescription = "Settings"
+                                )
+                            },
+                            label = {
+                                Text(
+                                    "Settings",
+                                    fontWeight = if (tab == 3) FontWeight.Bold else FontWeight.Normal
+                                )
+                            },
+                            colors = navColors
+                        )
+                    }
+                }
+            }
+            } // closes the inner tab-content Box
+        } // closes the outer Box
+    } // closes the Scaffold
 
     preview?.let { (profile, state) ->
         ProfilePreviewDialog(
