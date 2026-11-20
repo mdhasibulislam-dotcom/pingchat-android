@@ -448,6 +448,7 @@ fun PublicProfileScreen(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(colors.card)
             ) {
                 var first = true
+                @Composable
                 fun divider() {
                     if (!first) HorizontalDivider(color = colors.border)
                     first = false
@@ -627,6 +628,7 @@ fun PublicProfileScreen(
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(colors.card)
                 ) {
                     var firstAction = true
+                    @Composable
                     fun actionDivider() {
                         if (!firstAction) HorizontalDivider(color = colors.border)
                         firstAction = false
