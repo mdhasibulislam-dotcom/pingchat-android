@@ -1,8 +1,9 @@
 package com.mdhasibulislam.pingchat.ui.screens
 
-import android.content.Intent
-import android.provider.Settings
+import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.ExperimentalFoundationApi
+import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -18,23 +19,31 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Logout
 import androidx.compose.material.icons.filled.CallMade
 import androidx.compose.material.icons.filled.CallMissed
 import androidx.compose.material.icons.filled.CallReceived
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.HelpOutline
+import androidx.compose.material.icons.filled.Info
+import androidx.compose.material.icons.filled.Language
 import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.Palette
 import androidx.compose.material.icons.filled.Phone
-import androidx.compose.material3.Button
+import androidx.compose.material.icons.filled.Security
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -47,12 +56,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
-import androidx.core.app.NotificationManagerCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.mdhasibulislam.pingchat.data.CallHistoryItem
 import com.mdhasibulislam.pingchat.data.Prefs
@@ -60,245 +68,240 @@ import com.mdhasibulislam.pingchat.data.Profile
 import com.mdhasibulislam.pingchat.data.TimeFormat
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
-import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.CallHistoryViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
 
-/** Settings — theme, privacy, ringtone, notifications, change password, log out. */
+/**
+ * Settings (v3.2.0 redesign, mockup screen 7) — white cards with
+ * rounded 16dp corners, icon + title + subtitle + chevron rows.
+ *
+ * The old inline toggles moved out: dark theme + accent + font size
+ * live on the Appearance screen, push/message/call/preview toggles on
+ * the Notifications screen, and change password on its own screen.
+ * This screen only navigates to them, plus Help, About and Log Out.
+ */
 @Composable
 fun SettingsScreen(
     viewModel: ProfileViewModel,
     prefs: Prefs,
     darkTheme: Boolean,
     onDarkThemeChange: (Boolean) -> Unit,
-    // v3.1.0 (worker A): Privacy & Security screen ("privacy_security"
-    // route) and worker G's Privacy Policy ("privacy_policy" route).
     onPrivacySecurityClick: () -> Unit = {},
-    onPrivacyPolicyClick: () -> Unit = {}
+    onPrivacyPolicyClick: () -> Unit = {},
+    onEditProfileClick: () -> Unit = {},
+    onNotificationsClick: () -> Unit = {},
+    onAppearanceClick: () -> Unit = {}
 ) {
+    // darkTheme / onDarkThemeChange / prefs are kept for signature
+    // compatibility (another worker wires the appearance route); this
+    // screen no longer shows a theme toggle itself.
     val profile by viewModel.profile.collectAsState()
-    val saving by viewModel.saving.collectAsState()
-    val error by viewModel.error.collectAsState()
-    val info by viewModel.info.collectAsState()
     val colors = pingChatColors
-    val context = LocalContext.current
-    var ringtone by remember { mutableStateOf(prefs.ringtoneEnabled) }
-    // v3.0.2: push notifications ON/OFF — persisted in Prefs, reflects the
-    // saved value whenever Settings is opened.
-    var notificationsEnabled by remember { mutableStateOf(prefs.notificationsEnabled) }
-    var notificationsHint by remember { mutableStateOf<String?>(null) }
-    var isPublic by remember(profile?.isPublic) { mutableStateOf(profile?.isPublic ?: true) }
-    var newPassword by remember { mutableStateOf("") }
-    var newPassword2 by remember { mutableStateOf("") }
-    var passwordError by remember { mutableStateOf<String?>(null) }
+    var languageDialog by remember { mutableStateOf(false) }
+    var helpDialog by remember { mutableStateOf(false) }
+    var aboutDialog by remember { mutableStateOf(false) }
 
     Column(
         modifier = Modifier
             .fillMaxSize()
+            .background(colors.bg)
             .verticalScroll(rememberScrollState())
-            .padding(24.dp)
+            .padding(horizontal = 16.dp, vertical = 16.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium, color = colors.text)
-        Spacer(Modifier.height(20.dp))
 
-        SettingsRow(
-            title = "Dark theme",
-            subtitle = "Use the dark colour scheme.",
-            checked = darkTheme,
-            onCheckedChange = onDarkThemeChange
-        )
-        SettingsRow(
-            title = "Public profile",
-            subtitle = "Anyone can see your full profile. Private profiles show full info only to friends.",
-            checked = isPublic,
-            onCheckedChange = {
-                isPublic = it
-                val p = profile
-                if (p != null) viewModel.saveProfile(p.fullName, p.bio ?: "", p.phone ?: "", it)
-            }
-        )
-        SettingsRow(
-            title = "Ringtone",
-            subtitle = "Play a sound for incoming calls.",
-            checked = ringtone,
-            onCheckedChange = {
-                ringtone = it
-                prefs.ringtoneEnabled = it
-            }
-        )
-
-        Spacer(Modifier.height(20.dp))
-        Text("Notifications", style = MaterialTheme.typography.titleMedium, color = colors.text, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        // v3.0.2: real ON/OFF toggle. OFF stops push notifications on this
-        // phone (display gate + fcm_token cleared, see ProfileViewModel);
-        // ON restores them. Calls are NOT affected — they ring via
-        // CallManager, not push notifications.
-        SettingsRow(
-            title = "Push notifications",
-            subtitle = "Get notified on this phone when someone messages or calls you.",
-            checked = notificationsEnabled,
-            onCheckedChange = { enabled ->
-                notificationsEnabled = enabled
-                prefs.notificationsEnabled = enabled
-                if (enabled && !NotificationManagerCompat.from(context).areNotificationsEnabled()) {
-                    notificationsHint =
-                        "Notifications are blocked in your phone's system settings — " +
-                            "tap \"Turn on notifications\" below to allow them."
-                } else {
-                    notificationsHint = null
-                }
-                viewModel.setNotificationsEnabled(enabled)
-            }
-        )
-        Spacer(Modifier.height(8.dp))
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Icon(Icons.Default.Notifications, contentDescription = null, tint = colors.muted, modifier = Modifier.size(20.dp))
-            Spacer(Modifier.width(8.dp))
-            Text(
-                "When someone messages or calls you, a push notification is sent to this phone. " +
-                    "If notifications stop arriving, sign out and back in once.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.text2
-            )
-        }
-        if (notificationsHint != null) {
-            Spacer(Modifier.height(8.dp))
-            Text(
-                notificationsHint ?: "",
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.error
-            )
-        }
-        // v2.0.9: if notifications are off (permission denied, or turned
-        // off later), offer a shortcut to the system notification settings.
-        if (!NotificationManagerCompat.from(context).areNotificationsEnabled()) {
-            Spacer(Modifier.height(12.dp))
-            OutlinedButton(
-                onClick = {
-                    val intent = Intent(Settings.ACTION_APP_NOTIFICATION_SETTINGS).apply {
-                        putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
-                    }
-                    context.startActivity(intent)
-                },
-                modifier = Modifier.fillMaxWidth()
+        // Profile card — taps through to Edit Profile.
+        SettingsCard {
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clickable(onClick = onEditProfileClick)
+                    .padding(16.dp),
+                verticalAlignment = Alignment.CenterVertically
             ) {
-                Text("Turn on notifications")
+                if (profile != null) {
+                    Avatar(profile = profile!!, size = AvatarSize.MD)
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        profile?.fullName?.ifBlank { "PingChat" } ?: "PingChat",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = colors.text,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                    val username = profile?.username?.ifBlank { null }
+                    if (username != null) {
+                        Text("@$username", style = MaterialTheme.typography.bodyMedium, color = colors.muted)
+                    }
+                }
+                Icon(Icons.Default.ChevronRight, contentDescription = null, tint = colors.muted, modifier = Modifier.size(20.dp))
             }
         }
 
-        Spacer(Modifier.height(24.dp))
-        Text("Privacy & Security", style = MaterialTheme.typography.titleMedium, color = colors.text, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        SettingsNavRow(
-            title = "Privacy & Security",
-            subtitle = "Who can see you, message you or call you, blocked users, devices.",
-            onClick = onPrivacySecurityClick
-        )
-
-        Spacer(Modifier.height(24.dp))
-        Text("Change password", style = MaterialTheme.typography.titleMedium, color = colors.text, fontWeight = FontWeight.Bold)
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = newPassword,
-            onValueChange = { newPassword = it },
-            label = { Text("New password") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(Modifier.height(8.dp))
-        OutlinedTextField(
-            value = newPassword2,
-            onValueChange = { newPassword2 = it },
-            label = { Text("Confirm new password") },
-            singleLine = true,
-            modifier = Modifier.fillMaxWidth()
-        )
-        Spacer(Modifier.height(12.dp))
-        Button(
-            onClick = {
-                if (newPassword != newPassword2) {
-                    passwordError = "Passwords do not match."
-                    return@Button
-                }
-                passwordError = null
-                viewModel.changePassword(newPassword)
-                newPassword = ""
-                newPassword2 = ""
-            },
-            enabled = !saving,
-            modifier = Modifier.fillMaxWidth()
-        ) {
-            if (saving) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-            else Text("Update password")
+        SettingsCard {
+            SettingsNavRow(
+                icon = Icons.Default.Security,
+                title = "Privacy & Security",
+                subtitle = "Who can see you, message you or call you.",
+                onClick = onPrivacySecurityClick
+            )
+            HorizontalDivider(color = colors.border)
+            SettingsNavRow(
+                icon = Icons.Default.Notifications,
+                title = "Notifications",
+                subtitle = "Push, message, call and preview settings.",
+                onClick = onNotificationsClick
+            )
+            HorizontalDivider(color = colors.border)
+            SettingsNavRow(
+                icon = Icons.Default.Palette,
+                title = "Appearance",
+                subtitle = "Theme, accent colour and font size.",
+                onClick = onAppearanceClick
+            )
+            HorizontalDivider(color = colors.border)
+            SettingsNavRow(
+                icon = Icons.Default.Language,
+                title = "Language",
+                subtitle = null,
+                value = "English",
+                onClick = { languageDialog = true }
+            )
         }
 
-        if (passwordError != null) {
-            Spacer(Modifier.height(12.dp))
-            Text(passwordError ?: "", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
+        SettingsCard {
+            SettingsNavRow(
+                icon = Icons.Default.HelpOutline,
+                title = "Help & Support",
+                subtitle = "Get help using PingChat.",
+                onClick = { helpDialog = true }
+            )
+            HorizontalDivider(color = colors.border)
+            SettingsNavRow(
+                icon = Icons.Default.Info,
+                title = "About PingChat",
+                subtitle = "Version 3.2.0",
+                onClick = { aboutDialog = true }
+            )
         }
 
-        if (error != null) {
-            Spacer(Modifier.height(12.dp))
-            Text(error ?: "", color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodyMedium)
-        }
-        if (info != null) {
-            Spacer(Modifier.height(12.dp))
-            Text(info ?: "", color = Emerald, style = MaterialTheme.typography.bodyMedium)
-        }
-
-        Spacer(Modifier.height(24.dp))
         OutlinedButton(
             onClick = { viewModel.logout() },
-            modifier = Modifier.fillMaxWidth()
+            modifier = Modifier.fillMaxWidth(),
+            border = BorderStroke(1.dp, MaterialTheme.colorScheme.error),
+            colors = ButtonDefaults.outlinedButtonColors(contentColor = MaterialTheme.colorScheme.error)
         ) {
-            Text("Log out", color = MaterialTheme.colorScheme.error)
+            Icon(Icons.AutoMirrored.Filled.Logout, contentDescription = null, modifier = Modifier.size(18.dp))
+            Spacer(Modifier.width(8.dp))
+            Text("Log Out", color = MaterialTheme.colorScheme.error, fontWeight = FontWeight.SemiBold)
         }
-        Spacer(Modifier.height(8.dp))
         Text(
             "PingChat native — chats, friends, profiles and calls.",
             style = MaterialTheme.typography.bodySmall,
             color = colors.muted
         )
-        // v3.1.0 (worker A): Privacy Policy row at the very bottom of
-        // Settings — opens worker G's screen ("privacy_policy" route).
-        Spacer(Modifier.height(16.dp))
-        SettingsNavRow(
-            title = "Privacy Policy",
-            subtitle = "How PingChat handles your data.",
-            onClick = onPrivacyPolicyClick
+    }
+
+    // Language: English is the only language for now — an honest list,
+    // not a dead button.
+    if (languageDialog) {
+        AlertDialog(
+            onDismissRequest = { languageDialog = false },
+            title = { Text("Language") },
+            text = {
+                Column {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        RadioButton(selected = true, onClick = null)
+                        Spacer(Modifier.width(8.dp))
+                        Text("English", style = MaterialTheme.typography.bodyMedium, color = colors.text)
+                    }
+                    Spacer(Modifier.height(8.dp))
+                    Text(
+                        "More languages coming soon.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = colors.muted
+                    )
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { languageDialog = false }) { Text("Done") }
+            }
+        )
+    }
+
+    // Help & Support: short help text + a way through to the Privacy Policy.
+    if (helpDialog) {
+        AlertDialog(
+            onDismissRequest = { helpDialog = false },
+            title = { Text("Help & Support") },
+            text = {
+                Text(
+                    "Need help with PingChat?\n\n" +
+                        "Chats, friends, profiles and calls all work from the tabs at the " +
+                        "bottom. If notifications stop arriving, sign out and back in once.\n\n" +
+                        "You can also read how PingChat handles your data in the Privacy Policy.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.text
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { helpDialog = false }) { Text("Close") }
+            },
+            dismissButton = {
+                TextButton(
+                    onClick = {
+                        helpDialog = false
+                        onPrivacyPolicyClick()
+                    }
+                ) { Text("Privacy Policy") }
+            }
+        )
+    }
+
+    // About: the real version, 3.2.0.
+    if (aboutDialog) {
+        AlertDialog(
+            onDismissRequest = { aboutDialog = false },
+            title = { Text("About PingChat") },
+            text = {
+                Text(
+                    "PingChat\nVersion 3.2.0\n\nConnect • Chat • Share\n\n" +
+                        "A simple, private messaging app — chats, friends, profiles and calls.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = colors.text
+                )
+            },
+            confirmButton = {
+                TextButton(onClick = { aboutDialog = false }) { Text("Close") }
+            }
         )
     }
 }
 
+/** A white card with rounded 16dp corners (v3.2.0 mockup style). */
 @Composable
-private fun SettingsRow(
-    title: String,
-    subtitle: String,
-    checked: Boolean,
-    onCheckedChange: (Boolean) -> Unit
-) {
+private fun SettingsCard(content: @Composable () -> Unit) {
     val colors = pingChatColors
-    Row(
+    Column(
         modifier = Modifier
             .fillMaxWidth()
-            .padding(vertical = 8.dp),
-        verticalAlignment = Alignment.CenterVertically
+            .background(colors.card, RoundedCornerShape(16.dp))
+            .border(1.dp, colors.border, RoundedCornerShape(16.dp))
     ) {
-        Column(modifier = Modifier.weight(1f)) {
-            Text(title, style = MaterialTheme.typography.bodyMedium, color = colors.text, fontWeight = FontWeight.Medium)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = colors.muted)
-        }
-        Switch(checked = checked, onCheckedChange = onCheckedChange)
+        content()
     }
 }
 
-/** One tappable navigation row (v3.1.0: Privacy & Security, Privacy Policy). */
+/** One tappable navigation row: icon + title + subtitle + chevron (v3.2.0). */
 @Composable
 private fun SettingsNavRow(
+    icon: ImageVector,
     title: String,
-    subtitle: String,
+    subtitle: String?,
+    value: String? = null,
     onClick: () -> Unit
 ) {
     val colors = pingChatColors
@@ -306,12 +309,20 @@ private fun SettingsNavRow(
         modifier = Modifier
             .fillMaxWidth()
             .clickable(onClick = onClick)
-            .padding(vertical = 10.dp),
+            .padding(16.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Icon(icon, contentDescription = null, tint = colors.text, modifier = Modifier.size(22.dp))
+        Spacer(Modifier.width(12.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(title, style = MaterialTheme.typography.bodyMedium, color = colors.text, fontWeight = FontWeight.Medium)
-            Text(subtitle, style = MaterialTheme.typography.bodySmall, color = colors.muted)
+            if (subtitle != null) {
+                Text(subtitle, style = MaterialTheme.typography.bodySmall, color = colors.muted)
+            }
+        }
+        if (value != null) {
+            Text(value, style = MaterialTheme.typography.bodyMedium, color = colors.muted)
+            Spacer(Modifier.width(8.dp))
         }
         Icon(Icons.Default.ChevronRight, contentDescription = null, tint = colors.muted, modifier = Modifier.size(20.dp))
     }

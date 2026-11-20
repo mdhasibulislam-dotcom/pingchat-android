@@ -85,7 +85,10 @@ fun MainScreen(
     // v3.1.0 (worker A): Settings > Privacy & Security ("privacy_security"
     // route) and Privacy Policy ("privacy_policy" route, worker G).
     onPrivacySecurityClick: () -> Unit = {},
-    onPrivacyPolicyClick: () -> Unit = {}
+    onPrivacyPolicyClick: () -> Unit = {},
+    // v3.2.0 (worker A): own-profile overlay's Edit Profile button opens
+    // the "edit_profile" route — MainActivity wires this param.
+    onEditProfileClick: () -> Unit = {}
 ) {
     var tab by remember { mutableIntStateOf(0) }
     // Friend-request notification tap: switch to the People tab (2) once,
@@ -355,9 +358,14 @@ fun MainScreen(
                     }
                 )
             } else if (showProfile) {
-                ProfileScreen(profileViewModel, onSettingsClick = { showProfile = false; tab = 3 })
+                ProfileScreen(
+                    profileViewModel,
+                    onBack = { showProfile = false },
+                    onSettingsClick = { showProfile = false; tab = 3 },
+                    onEditProfileClick = { showProfile = false; onEditProfileClick() }
+                )
             } else when (tab) {
-                0 -> ChatsScreen(chatsViewModel, onOpenChat)
+                0 -> ChatsScreen(chatsViewModel, onOpenChat, onOpenOwnProfile = { showProfile = true })
                 1 -> CallsScreen()
                 2 -> PeopleScreen(
                     viewModel = peopleViewModel,
@@ -370,7 +378,10 @@ fun MainScreen(
                     darkTheme = darkTheme,
                     onDarkThemeChange = onDarkThemeChange,
                     onPrivacySecurityClick = onPrivacySecurityClick,
-                    onPrivacyPolicyClick = onPrivacyPolicyClick
+                    onPrivacyPolicyClick = onPrivacyPolicyClick,
+                    // v3.2.0: Settings profile card is the second Edit
+                    // Profile entry point (same route as the overlay).
+                    onEditProfileClick = onEditProfileClick
                 )
             }
         }

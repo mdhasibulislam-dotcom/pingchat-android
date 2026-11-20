@@ -27,11 +27,15 @@ import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
+import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -43,7 +47,6 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
@@ -167,16 +170,7 @@ class StoryViewModel(application: Application) : AndroidViewModel(application) {
     }
 }
 
-/** Colourful (unseen) / grey (seen) ring around a story avatar. */
-private val UnseenRingBrush = Brush.linearGradient(
-    listOf(
-        Color(0xFFFEDA75),
-        Color(0xFFFA7E1E),
-        Color(0xFFD62976),
-        Color(0xFF962FBF),
-        Color(0xFF4F5BD5)
-    )
-)
+/** Green (unseen, v3.2.0 mockup) / grey (seen) ring around a story avatar. */
 
 /** "2h ago" / "45m ago" / "just now" for the viewer header. */
 private fun storyAge(iso: String?): String {
@@ -191,11 +185,15 @@ private fun storyAge(iso: String?): String {
 }
 
 /**
- * Story ring strip for the top of the Chats tab. First tile is my own
- * story (+ badge); then one tile per friend with an unexpired story.
- * Tapping a tile opens the full-screen viewer; tapping my tile with no
- * story yet opens the photo/video picker instead.
+ * Story ring strip for the top of the Chats tab. v3.2.0 (mockup): a
+ * "Stories" title row with a working "See all >" link, then a strip whose
+ * FIRST item is a soft "Add Story" card (the ONLY strip entry point for
+ * adding — MyStoryTile has no "+" badge any more), then my own story
+ * circle, then one tile per friend with an unexpired story.
+ * Tapping my tile VIEWS my story; with no story yet it does nothing
+ * (it never opens the picker). Tapping a tile opens the viewer.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
 fun StoryStrip() {
     val viewModel: StoryViewModel = viewModel()
@@ -208,6 +206,9 @@ fun StoryStrip() {
 
     var viewing by remember { mutableStateOf<StoryGroup?>(null) }
     var viewingIndex by remember { mutableStateOf(0) }
+    // "See all" bottom sheet: every active story owner, in strip order.
+    var showAllStories by remember { mutableStateOf(false) }
+    val allStoriesSheetState = rememberModalBottomSheetState()
 
     // Photo/video picker (stories allow BOTH — unlike chat, where only
     // photos can be sent). PickVisualMedia needs no extra permission.
@@ -237,6 +238,40 @@ fun StoryStrip() {
     val friendGroups = groups.filter { !it.isMine }
 
     Column(modifier = Modifier.fillMaxWidth()) {
+        // v3.2.0: "Stories" title row (mockup) with a working "See all >"
+        // link — it opens a bottom sheet of all active story owners.
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Stories",
+                style = MaterialTheme.typography.titleLarge,
+                fontSize = 20.sp,
+                fontWeight = FontWeight.Bold,
+                color = colors.text,
+                modifier = Modifier.weight(1f)
+            )
+            Row(
+                modifier = Modifier.clickable { showAllStories = true },
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Text(
+                    text = "See all",
+                    style = MaterialTheme.typography.bodyMedium,
+                    fontWeight = FontWeight.SemiBold,
+                    color = Emerald
+                )
+                Icon(
+                    Icons.Default.ChevronRight,
+                    contentDescription = "See all stories",
+                    tint = Emerald,
+                    modifier = Modifier.size(18.dp)
+                )
+            }
+        }
         LazyRow(
             modifier = Modifier
                 .fillMaxWidth()
@@ -244,15 +279,21 @@ fun StoryStrip() {
             horizontalArrangement = Arrangement.spacedBy(12.dp),
             contentPadding = androidx.compose.foundation.layout.PaddingValues(horizontal = 16.dp)
         ) {
-            // My story tile (always first, even with no stories yet).
+            // v3.2.0: "Add Story" soft card FIRST — the only strip
+            // entry point for adding a story.
+            item(key = "add-story") {
+                AddStoryCard(onClick = { pickStory() })
+            }
+            // My story tile (always second, even with no stories yet).
             item(key = "my-story") {
                 MyStoryTile(
                     hasStories = myGroup != null,
                     allSeen = myGroup?.allSeen ?: true,
                     uploading = uploading,
                     onClick = {
-                        if (myGroup == null) pickStory()
-                        else {
+                        // VIEW only: with no story yet, do nothing —
+                        // the "Add Story" card is the only add entry.
+                        if (myGroup != null) {
                             viewingIndex = 0
                             viewing = myGroup
                         }
@@ -279,6 +320,75 @@ fun StoryStrip() {
         }
     }
 
+    // v3.2.0: "See all" sheet — every active story owner (mine first,
+    // then friends, same data/order as the strip). Tapping one opens
+    // that story in the existing viewer.
+    if (showAllStories) {
+        ModalBottomSheet(
+            onDismissRequest = { showAllStories = false },
+            sheetState = allStoriesSheetState
+        ) {
+            Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                Text(
+                    "Stories",
+                    style = MaterialTheme.typography.titleLarge,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.text
+                )
+                Spacer(Modifier.height(8.dp))
+                val allGroups = listOfNotNull(myGroup) + friendGroups
+                if (allGroups.isEmpty()) {
+                    Text(
+                        "No stories yet — tap Add Story to post one.",
+                        color = colors.muted,
+                        style = MaterialTheme.typography.bodyMedium,
+                        modifier = Modifier.padding(vertical = 16.dp)
+                    )
+                } else {
+                    allGroups.forEach { group ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showAllStories = false
+                                    viewingIndex = 0
+                                    viewing = group
+                                }
+                                .padding(vertical = 10.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Avatar(profile = group.user, size = AvatarSize.MD)
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    text = if (group.isMine) "Your Story"
+                                    else group.user.fullName.ifBlank { group.user.username },
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = colors.text,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    text = "${group.stories.size} " +
+                                        if (group.stories.size == 1) "story" else "stories",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = colors.muted
+                                )
+                            }
+                            Icon(
+                                Icons.Default.ChevronRight,
+                                contentDescription = null,
+                                tint = colors.muted,
+                                modifier = Modifier.size(20.dp)
+                            )
+                        }
+                    }
+                }
+                Spacer(Modifier.height(24.dp))
+            }
+        }
+    }
+
     val group = viewing
     if (group != null) {
         StoryViewer(
@@ -290,13 +400,61 @@ fun StoryStrip() {
                 viewModel.deleteStory(story)
                 // If it was the last of my stories, the viewer closes.
                 if (group.stories.size <= 1) viewing = null
-            },
-            onAddMore = { pickStory() }
+            }
         )
     }
 }
 
-/** My tile: avatar + green "+" badge; ring only when I have stories. */
+/** v3.2.0: "Add Story" soft card — first item in the strip, the ONLY
+ *  strip entry point for adding a story (mockup: light grey-green
+ *  rounded card, green circle with a white +, "Add Story" below). */
+@Composable
+private fun AddStoryCard(onClick: () -> Unit) {
+    val colors = pingChatColors
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        modifier = Modifier.width(68.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(width = 68.dp, height = 92.dp)
+                .clip(RoundedCornerShape(16.dp))
+                .background(colors.card2)
+                .clickable(onClick = onClick),
+            contentAlignment = Alignment.Center
+        ) {
+            Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Emerald),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Add,
+                        contentDescription = "Add story",
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    text = "Add Story",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.SemiBold,
+                    color = colors.text,
+                    textAlign = TextAlign.Center
+                )
+            }
+        }
+    }
+}
+
+/** My tile: avatar + green/grey ring only when I have stories.
+ *  v3.2.0: NO "+" badge any more — the "Add Story" card is the only
+ *  add entry point. Tapping views my story (never opens the picker). */
 @Composable
 private fun MyStoryTile(
     hasStories: Boolean,
@@ -308,7 +466,7 @@ private fun MyStoryTile(
     val colors = pingChatColors
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(64.dp)
+        modifier = Modifier.width(68.dp)
     ) {
         Box(
             modifier = Modifier
@@ -322,7 +480,7 @@ private fun MyStoryTile(
                         .size(64.dp)
                         .border(
                             3.dp,
-                            if (allSeen) SolidColor(colors.border) else UnseenRingBrush,
+                            if (allSeen) SolidColor(colors.border) else SolidColor(Emerald),
                             CircleShape
                         )
                         .padding(3.dp),
@@ -333,26 +491,9 @@ private fun MyStoryTile(
             } else {
                 Avatar(profile = myProfile, size = AvatarSize.MD)
             }
-            // Green "+" badge at the bottom-right (add a story).
-            Box(
-                modifier = Modifier
-                    .align(Alignment.BottomEnd)
-                    .size(20.dp)
-                    .clip(CircleShape)
-                    .background(Emerald)
-                    .border(2.dp, colors.card, CircleShape),
-                contentAlignment = Alignment.Center
-            ) {
-                Icon(
-                    Icons.Default.Add,
-                    contentDescription = "Add story",
-                    tint = Color.White,
-                    modifier = Modifier.size(14.dp)
-                )
-            }
         }
         Text(
-            text = if (uploading) "Posting…" else "Your story",
+            text = if (uploading) "Posting…" else "Your Story",
             style = MaterialTheme.typography.bodySmall,
             fontSize = 12.sp,
             color = colors.text,
@@ -372,14 +513,14 @@ private fun FriendStoryTile(group: StoryGroup, onClick: () -> Unit) {
         .substringBefore(" ")
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
-        modifier = Modifier.width(64.dp)
+        modifier = Modifier.width(68.dp)
     ) {
         Box(
             modifier = Modifier
                 .size(64.dp)
                 .border(
                     3.dp,
-                    if (group.allSeen) SolidColor(colors.border) else UnseenRingBrush,
+                    if (group.allSeen) SolidColor(colors.border) else SolidColor(Emerald),
                     CircleShape
                 )
                 .padding(3.dp)
@@ -403,9 +544,10 @@ private fun FriendStoryTile(group: StoryGroup, onClick: () -> Unit) {
 
 /**
  * Full-screen story viewer: segmented progress bars, avatar + name + age,
- * close button, delete (own stories) and add-more (own stories).
- * Photo shows 5 s; video plays once for its own length. Tap right = next,
- * tap left = previous; swiping is not needed.
+ * close button, delete (own stories). NO add-more button inside the
+ * viewer (v3.2.0): the "Add Story" card in the strip is the only way
+ * to add a story. Photo shows 5 s; video plays once for its own length.
+ * Tap right = next, tap left = previous; swiping is not needed.
  */
 @Composable
 private fun StoryViewer(
@@ -413,8 +555,7 @@ private fun StoryViewer(
     startIndex: Int,
     onClose: () -> Unit,
     onMarkSeen: (Story) -> Unit,
-    onDelete: (Story) -> Unit,
-    onAddMore: () -> Unit
+    onDelete: (Story) -> Unit
 ) {
     var index by remember { mutableStateOf(startIndex.coerceIn(0, (group.stories.size - 1).coerceAtLeast(0))) }
     val stories = group.stories
@@ -562,9 +703,6 @@ private fun StoryViewer(
                         )
                     }
                     if (group.isMine) {
-                        IconButton(onClick = onAddMore) {
-                            Icon(Icons.Default.Add, contentDescription = "Add story", tint = Color.White)
-                        }
                         IconButton(onClick = { onDelete(story) }) {
                             Icon(Icons.Default.Delete, contentDescription = "Delete story", tint = Color.White)
                         }

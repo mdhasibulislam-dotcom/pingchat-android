@@ -24,11 +24,21 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ArrowBack
+import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Call
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ContentCopy
+import androidx.compose.material.icons.filled.DateRange
+import androidx.compose.material.icons.filled.GroupAdd
+import androidx.compose.material.icons.filled.Image
+import androidx.compose.material.icons.filled.Info
 import androidx.compose.material.icons.filled.Link
 import androidx.compose.material.icons.filled.LocationOn
 import androidx.compose.material.icons.filled.Message
+import androidx.compose.material.icons.filled.Notifications
+import androidx.compose.material.icons.filled.NotificationsOff
+import androidx.compose.material.icons.filled.Person
+import androidx.compose.material.icons.filled.Phone
 import androidx.compose.material.icons.filled.QrCode2
 import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Share
@@ -62,6 +72,7 @@ import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
@@ -84,11 +95,15 @@ import java.time.format.DateTimeFormatter
 import java.util.Locale
 
 /**
- * Public profile (v3.1.0, worker F): cover photo, avatar + online dot,
- * name + verified badge, @username, status line, bio, one-line
- * Message / audio call / video call buttons, share link + QR code,
- * mutual friends, social links, city + education, badges, profile
- * visitors, and the user's own theme colour on the header.
+ * Public profile (v3.2.0 restyle — same mockup visual style as the own
+ * Profile screen: white cards, rounded 16dp corners, green primary
+ * #059669): cover photo, avatar + online dot, name + verified badge,
+ * @username, status line, bio, Message / audio call / video call buttons,
+ * stats row, info card, share link + QR code, mutual friends, social
+ * links, city + education, badges, profile visitors, and the user's own
+ * theme colour on the header. WhatsApp-style contact actions
+ * (Block/Unblock, Create a group, Mute, Shared media) render only when
+ * the caller wires them (ChatScreen does; MainScreen leaves them null).
  *
  * HOST WIRING (MainScreen / parent — not this file): when opening the
  * screen for a user, call PeopleViewModel.loadPublicProfile(userId) for
@@ -198,7 +213,20 @@ fun PublicProfileScreen(
     onCancelRequest: () -> Unit,
     onAccept: () -> Unit,
     onDecline: () -> Unit,
-    onOpenProfile: (Profile) -> Unit
+    onOpenProfile: (Profile) -> Unit,
+    // v3.2.0: split photo/voice counts for the peer, when the caller has
+    // them (neither current caller does — see stats row note below).
+    photosSent: Int = 0,
+    voiceSent: Int = 0,
+    // v3.2.0: WhatsApp-style contact actions (ChatScreen wires these;
+    // null hides that row — MainScreen passes none, so no card shows).
+    isBlocked: Boolean = false,
+    isMuted: Boolean = false,
+    sharedMediaCount: Int = 0,
+    onBlockToggle: (() -> Unit)? = null,
+    onCreateGroup: (() -> Unit)? = null,
+    onMuteToggle: (() -> Unit)? = null,
+    onSharedMedia: (() -> Unit)? = null
 ) {
     val colors = pingChatColors
     val context = LocalContext.current
@@ -216,12 +244,20 @@ fun PublicProfileScreen(
         else DateTimeFormatter.ofPattern("MMMM d, yyyy", Locale.US)
             .format(instant.atZone(ZoneId.systemDefault()))
     }
-    val badges = remember(profile, friendsCount, mediaSent) {
-        profileBadges(profile, friendsCount, mediaSent)
+    // Split counts feed the "Active sharer" badge when mediaSent is 0.
+    val mediaTotal = if (mediaSent > 0) mediaSent else photosSent + voiceSent
+    val badges = remember(profile, friendsCount, mediaTotal) {
+        profileBadges(profile, friendsCount, mediaTotal)
     }
     val socialLinks = remember(profile.socialLinks) {
         profile.socialLinks?.nonBlank() ?: emptyList()
     }
+    val peerName = profile.fullName.ifBlank { profile.username }
+    // The peer's email is not in the Profile model, so no Email row exists
+    // for peers; Phone shows only to friends.
+    val showPhone = state == FriendState.FRIENDS && !profile.phone.isNullOrBlank()
+    val hasContactActions = onBlockToggle != null || onCreateGroup != null ||
+        onMuteToggle != null || onSharedMedia != null
 
     fun openUrl(url: String) {
         val fixed = if (url.startsWith("http://") || url.startsWith("https://")) url else "https://$url"
@@ -232,9 +268,9 @@ fun PublicProfileScreen(
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())) {
+    Column(modifier = Modifier.fillMaxSize().background(colors.bg).verticalScroll(rememberScrollState())) {
         // Cover photo (or theme-colour gradient) with the avatar overlapping.
-        Box(modifier = Modifier.fillMaxWidth().height(200.dp)) {
+        Box(modifier = Modifier.fillMaxWidth().height(180.dp)) {
             val coverUrl = profile.coverPhotoUrl
             if (!coverUrl.isNullOrBlank() && coverUrl.startsWith("https://")) {
                 AsyncImage(
@@ -300,11 +336,19 @@ fun PublicProfileScreen(
                 Spacer(Modifier.width(4.dp))
                 Icon(Icons.Default.ContentCopy, contentDescription = "Copy username", tint = colors.muted, modifier = Modifier.size(14.dp))
             }
-            Spacer(Modifier.height(6.dp))
-            // Online dot state + last seen (Last Seen setting respected).
+            // Green "Online" pill when online, else last seen (Last Seen setting respected).
             if (online) {
-                Text("Online", style = MaterialTheme.typography.bodyMedium, color = Emerald)
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Emerald).padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(modifier = Modifier.size(8.dp).clip(CircleShape).background(Color.White))
+                    Spacer(Modifier.width(6.dp))
+                    Text("Online", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = Color.White)
+                }
             } else if (canSeeLastSeen) {
+                Spacer(Modifier.height(6.dp))
                 Text(lastSeenText(profile.lastSeen), style = MaterialTheme.typography.bodyMedium, color = colors.muted)
             }
             // One-line status.
@@ -385,23 +429,57 @@ fun PublicProfileScreen(
                 }
             }
 
+            Spacer(Modifier.height(16.dp))
+            // Stats row. NOTE: neither caller can supply the peer's Chats /
+            // Photos / Voice counts (MainScreen passes only friends.size +
+            // mediaSent=0; ChatScreen passes 0/0), and splitting mediaSent
+            // into Photos+Voice would be invented data — so the row shows
+            // the real values available at both call sites instead:
+            // Friends, Mutual friends, Profile visitors.
+            Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
+                PeerStat("$friendsCount", "Friends")
+                PeerStat("${mutualFriends.size}", "Mutual")
+                PeerStat("$viewCount", "Visitors")
+            }
+
             Spacer(Modifier.height(20.dp))
-            // City + education + member since + visitors, WhatsApp-style card.
+            // Info card (same look as the own Profile screen).
             Column(
                 modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(colors.card)
             ) {
+                var first = true
+                fun divider() {
+                    if (!first) HorizontalDivider(color = colors.border)
+                    first = false
+                }
+                if (canSeeBio && !profile.bio.isNullOrBlank()) {
+                    divider()
+                    ProfileInfoRow(icon = Icons.Default.Info, label = "About", value = profile.bio)
+                }
+                if (showPhone) {
+                    divider()
+                    ProfileInfoRow(icon = Icons.Default.Phone, label = "Phone", value = profile.phone ?: "")
+                }
+                divider()
+                ProfileInfoRow(
+                    icon = Icons.Default.Person,
+                    label = "Username",
+                    value = "@${profile.username}",
+                    onClick = { clipboard.setText(AnnotatedString("@${profile.username}")) }
+                )
                 if (!profile.city.isNullOrBlank()) {
+                    divider()
                     ProfileInfoRow(icon = Icons.Default.LocationOn, label = "City", value = profile.city)
-                    HorizontalDivider(color = colors.border)
                 }
                 if (!profile.education.isNullOrBlank()) {
+                    divider()
                     ProfileInfoRow(icon = Icons.Default.School, label = "Education", value = profile.education)
-                    HorizontalDivider(color = colors.border)
                 }
                 if (memberSince.isNotBlank()) {
-                    ProfileInfoRow(icon = Icons.Default.Verified, label = "Member since", value = memberSince)
-                    HorizontalDivider(color = colors.border)
+                    divider()
+                    ProfileInfoRow(icon = Icons.Default.DateRange, label = "Member since", value = memberSince)
                 }
+                divider()
                 ProfileInfoRow(
                     icon = Icons.Default.Visibility,
                     label = "Profile visitors",
@@ -538,6 +616,61 @@ fun PublicProfileScreen(
                 Spacer(Modifier.width(8.dp))
                 Text("Show QR code")
             }
+
+            // WhatsApp-style contact actions (v3.1.1 footer, moved inside
+            // from ChatScreen): only the rows the caller wired are shown.
+            if (hasContactActions) {
+                Spacer(Modifier.height(20.dp))
+                SectionHeader("Contact actions")
+                Spacer(Modifier.height(8.dp))
+                Column(
+                    modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(colors.card)
+                ) {
+                    var firstAction = true
+                    fun actionDivider() {
+                        if (!firstAction) HorizontalDivider(color = colors.border)
+                        firstAction = false
+                    }
+                    if (onMuteToggle != null) {
+                        actionDivider()
+                        ContactActionRow(
+                            icon = if (isMuted) Icons.Default.NotificationsOff else Icons.Default.Notifications,
+                            label = "Mute notifications",
+                            detail = if (isMuted) "On" else "Off",
+                            onClick = onMuteToggle
+                        )
+                    }
+                    if (onCreateGroup != null) {
+                        actionDivider()
+                        ContactActionRow(
+                            icon = Icons.Default.GroupAdd,
+                            label = "Create a group with $peerName",
+                            detail = null,
+                            onClick = onCreateGroup
+                        )
+                    }
+                    if (onSharedMedia != null) {
+                        actionDivider()
+                        ContactActionRow(
+                            icon = Icons.Default.Image,
+                            label = "Shared media",
+                            detail = if (sharedMediaCount == 0) "No photos yet"
+                            else "$sharedMediaCount photo${if (sharedMediaCount == 1) "" else "s"}",
+                            onClick = onSharedMedia
+                        )
+                    }
+                    if (onBlockToggle != null) {
+                        actionDivider()
+                        ContactActionRow(
+                            icon = Icons.Default.Block,
+                            label = if (isBlocked) "Unblock $peerName" else "Block $peerName",
+                            detail = null,
+                            destructive = true,
+                            onClick = onBlockToggle
+                        )
+                    }
+                }
+            }
             Spacer(Modifier.height(24.dp))
         }
     }
@@ -583,10 +716,22 @@ private fun SectionHeader(title: String) {
 }
 
 @Composable
-private fun ProfileInfoRow(icon: ImageVector, label: String, value: String) {
+private fun PeerStat(value: String, label: String) {
+    val colors = pingChatColors
+    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+        Text(value, fontWeight = FontWeight.Bold, style = MaterialTheme.typography.titleMedium, color = colors.text)
+        Text(label, style = MaterialTheme.typography.bodySmall, color = colors.muted)
+    }
+}
+
+@Composable
+private fun ProfileInfoRow(icon: ImageVector, label: String, value: String, onClick: (() -> Unit)? = null) {
     val colors = pingChatColors
     Row(
-        modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp),
+        modifier = Modifier
+            .fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable { onClick() } else Modifier)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
         Icon(icon, contentDescription = null, tint = colors.muted, modifier = Modifier.size(22.dp))
@@ -600,6 +745,42 @@ private fun ProfileInfoRow(icon: ImageVector, label: String, value: String) {
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+        if (onClick != null) {
+            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = colors.muted, modifier = Modifier.size(20.dp))
+        }
+    }
+}
+
+/** One WhatsApp-style contact-action row. */
+@Composable
+private fun ContactActionRow(
+    icon: ImageVector,
+    label: String,
+    detail: String?,
+    onClick: () -> Unit,
+    destructive: Boolean = false
+) {
+    val colors = pingChatColors
+    Row(
+        modifier = Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Icon(
+            icon,
+            contentDescription = null,
+            tint = if (destructive) MaterialTheme.colorScheme.error else colors.muted,
+            modifier = Modifier.size(22.dp)
+        )
+        Spacer(Modifier.width(16.dp))
+        Text(
+            text = label,
+            style = MaterialTheme.typography.bodyMedium,
+            color = if (destructive) MaterialTheme.colorScheme.error else colors.text,
+            modifier = Modifier.weight(1f)
+        )
+        if (detail != null) {
+            Text(text = detail, style = MaterialTheme.typography.bodyMedium, color = colors.muted)
         }
     }
 }

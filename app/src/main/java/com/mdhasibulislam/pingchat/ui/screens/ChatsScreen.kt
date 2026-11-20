@@ -2,6 +2,7 @@ package com.mdhasibulislam.pingchat.ui.screens
 
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.layout.Arrangement
@@ -12,6 +13,7 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
@@ -20,12 +22,14 @@ import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.filled.GroupAdd
+import androidx.compose.material.icons.filled.ChatBubble
+import androidx.compose.material.icons.filled.Group
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.FloatingActionButton
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -46,12 +50,15 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
+import coil.compose.AsyncImage
 import com.mdhasibulislam.pingchat.data.ConversationItem
 import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.data.Profile
@@ -61,24 +68,46 @@ import com.mdhasibulislam.pingchat.data.messageDisplayText
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
+import com.mdhasibulislam.pingchat.ui.theme.colorFor
+import com.mdhasibulislam.pingchat.ui.theme.initials
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.ChatsViewModel
 
 /** Chats tab: conversation list with search, last message, time, unread badge.
  *  v3.1.0: groups in the same list, long-press menu (pin / mute /
  *  archive), Archived section, new-group button.
- *  v3.1.1: story strip moved to the top, above the search bar. */
+ *  v3.1.1: story strip moved to the top, above the search bar.
+ *  v3.2.0 (mockup restyle): bold "PingChat" header with a green logo tile,
+ *  search icon (search field hidden until tapped) + own avatar on the
+ *  right, "Stories" title row + "See all" (in StoryStrip), Chat/Active
+ *  tab pills, 56dp chat avatars, green FAB (new chat / group) floating
+ *  above the bottom nav. Behaviour unchanged: search filtering,
+ *  Chat/Active tabs, long-press menu, Archived section, unread badges,
+ *  online dots. New params: [onOpenOwnProfile] (avatar tap — wired in
+ *  MainScreen to open the own profile) and [ownProfile] (avatar image
+ *  source; falls back to the session profile, then initials). */
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalFoundationApi::class)
 @Composable
-fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
+fun ChatsScreen(
+    viewModel: ChatsViewModel,
+    onOpenChat: (String) -> Unit,
+    onOpenOwnProfile: () -> Unit = {},
+    ownProfile: Profile? = null
+) {
     val items by viewModel.items.collectAsState()
     val archivedItems by viewModel.archivedItems.collectAsState()
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val onlineIds by SessionManager.onlineIds.collectAsState()
     val myId = SessionManager.user.collectAsState().value?.uid
+    // Own avatar: explicit param first, session profile as fallback.
+    val sessionProfile by SessionManager.profile.collectAsState()
+    val avatarProfile = ownProfile ?: sessionProfile
     val colors = pingChatColors
     var query by remember { mutableStateOf("") }
+    // v3.2.0: search field is hidden by default; the header search icon
+    // toggles it. The filtering logic below is unchanged.
+    var searchVisible by remember { mutableStateOf(false) }
     // v3.1.0: long-press menu target + archived section + new-group overlay.
     var menuItem by remember { mutableStateOf<ConversationItem?>(null) }
     var showArchived by remember { mutableStateOf(false) }
@@ -112,158 +141,218 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
         }
     }
 
-    Column(modifier = Modifier.fillMaxSize()) {
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            verticalAlignment = Alignment.CenterVertically
-        ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Text("Chats", style = MaterialTheme.typography.headlineMedium, color = colors.text)
-                Text("Your conversations.", style = MaterialTheme.typography.bodyMedium, color = colors.muted)
-            }
-            // v3.1.0: new group (friends only — the create screen picks
-            // members from the friend list).
-            IconButton(onClick = { showCreateGroup = true }) {
-                Icon(Icons.Default.GroupAdd, contentDescription = "New group", tint = colors.text)
-            }
-        }
-        // v3.1.1: story ring strip at the top of the Chats tab (12-hour
-        // stories) — above the search bar and the Chat | Active tabs.
-        StoryStrip()
-        // Messenger-style pill search: rounded, grey fill, no outline.
-        TextField(
-            value = query,
-            onValueChange = { query = it },
-            placeholder = { Text("Search chats") },
-            leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = colors.muted) },
-            singleLine = true,
-            shape = RoundedCornerShape(50),
-            colors = TextFieldDefaults.colors(
-                focusedContainerColor = colors.inputBg,
-                unfocusedContainerColor = colors.inputBg,
-                disabledContainerColor = colors.inputBg,
-                focusedIndicatorColor = Color.Transparent,
-                unfocusedIndicatorColor = Color.Transparent,
-                disabledIndicatorColor = Color.Transparent
-            ),
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 4.dp)
-        )
-        // Small tabs under the search bar: Chat | Active.
-        Row(
-            modifier = Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 8.dp),
-            horizontalArrangement = Arrangement.spacedBy(8.dp)
-        ) {
-            ChatTabChip(
-                text = "Chat",
-                selected = tab == 0,
-                onClick = { tab = 0 }
-            )
-            ChatTabChip(
-                text = "Active",
-                selected = tab == 1,
-                onClick = { tab = 1 }
-            )
-        }
-        if (error != null) {
-            Text(
-                text = error ?: "",
-                color = MaterialTheme.colorScheme.error,
-                style = MaterialTheme.typography.bodyMedium,
-                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
-            )
-        }
-        if (loading && items.isEmpty()) {
-            Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-                CircularProgressIndicator(color = Emerald)
-            }
-        } else if (tab == 1) {
-            // Active tab: only the people who are online right now
-            // (1-to-1 chats only — groups have no single peer).
-            val activeItems = filtered.filter { !it.isGroup && it.peer != null && onlineIds.contains(it.peer.id) }
-            if (activeItems.isEmpty()) {
-                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+    // Box so the FAB floats over the list (bottom padding keeps it
+    // clear of the bottom nav, which MainScreen owns).
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(colors.bg)
+    ) {
+        Column(modifier = Modifier.fillMaxSize()) {
+            // v3.2.0 header (mockup): green logo tile + bold "PingChat"
+            // on the left; search icon + own avatar on the right. The
+            // old "Chats / Your conversations." text and the header
+            // GroupAdd button are gone — group creation is on the FAB.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(Emerald),
+                    contentAlignment = Alignment.Center
+                ) {
                     Text(
-                        "No one is active right now.",
-                        color = colors.muted,
-                        style = MaterialTheme.typography.bodyMedium,
-                        modifier = Modifier.padding(24.dp)
+                        text = "P",
+                        color = Color.White,
+                        fontSize = 22.sp,
+                        fontWeight = FontWeight.Bold
                     )
                 }
-            } else {
-                LazyColumn(modifier = Modifier.fillMaxSize()) {
-                    items(activeItems, key = { it.conversation.id }) { item ->
-                        ActiveRow(
-                            item = item,
-                            onClick = { onOpenChat(item.conversation.id) }
-                        )
-                    }
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    text = "PingChat",
+                    fontSize = 22.sp,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.text,
+                    modifier = Modifier.weight(1f)
+                )
+                IconButton(onClick = { searchVisible = !searchVisible }) {
+                    Icon(Icons.Default.Search, contentDescription = "Search chats", tint = colors.text)
+                }
+                // Own avatar (tappable — opens the own profile).
+                Box(
+                    modifier = Modifier
+                        .size(40.dp)
+                        .clip(CircleShape)
+                        .clickable(onClick = onOpenOwnProfile),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Avatar(profile = avatarProfile, size = AvatarSize.SM)
                 }
             }
-        } else {
-            LazyColumn(modifier = Modifier.fillMaxSize()) {
-                if (filtered.isEmpty() && filteredArchived.isEmpty()) {
-                    item {
-                        Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
-                            Text(
-                                if (query.isBlank()) "No chats yet — add a friend to start chatting."
-                                else "No chats match \"$query\".",
-                                color = colors.muted,
-                                style = MaterialTheme.typography.bodyMedium,
-                                modifier = Modifier.padding(24.dp)
+            // v3.1.1: story ring strip at the top of the Chats tab
+            // (12-hour stories). v3.2.0: includes the "Stories" title
+            // row + working "See all" sheet and the "Add Story" card.
+            StoryStrip()
+            // Messenger-style pill search: rounded, grey fill, no outline.
+            // Hidden by default (v3.2.0); shown when the header icon is
+            // tapped. Clearing the query hides nothing — the icon toggles.
+            if (searchVisible) {
+                TextField(
+                    value = query,
+                    onValueChange = { query = it },
+                    placeholder = { Text("Search chats") },
+                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null, tint = colors.muted) },
+                    singleLine = true,
+                    shape = RoundedCornerShape(50),
+                    colors = TextFieldDefaults.colors(
+                        focusedContainerColor = colors.inputBg,
+                        unfocusedContainerColor = colors.inputBg,
+                        disabledContainerColor = colors.inputBg,
+                        focusedIndicatorColor = Color.Transparent,
+                        unfocusedIndicatorColor = Color.Transparent,
+                        disabledIndicatorColor = Color.Transparent
+                    ),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 16.dp, vertical = 4.dp)
+                )
+            }
+            // Small tabs under the search bar: Chat | Active.
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp, vertical = 8.dp),
+                horizontalArrangement = Arrangement.spacedBy(8.dp)
+            ) {
+                ChatTabChip(
+                    text = "Chat",
+                    selected = tab == 0,
+                    showChatIcon = true,
+                    onClick = { tab = 0 }
+                )
+                ChatTabChip(
+                    text = "Active",
+                    selected = tab == 1,
+                    showDot = true,
+                    onClick = { tab = 1 }
+                )
+            }
+            if (error != null) {
+                Text(
+                    text = error ?: "",
+                    color = MaterialTheme.colorScheme.error,
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            }
+            if (loading && items.isEmpty()) {
+                Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                    CircularProgressIndicator(color = Emerald)
+                }
+            } else if (tab == 1) {
+                // Active tab: only the people who are online right now
+                // (1-to-1 chats only — groups have no single peer).
+                val activeItems = filtered.filter { !it.isGroup && it.peer != null && onlineIds.contains(it.peer.id) }
+                if (activeItems.isEmpty()) {
+                    Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
+                        Text(
+                            "No one is active right now.",
+                            color = colors.muted,
+                            style = MaterialTheme.typography.bodyMedium,
+                            modifier = Modifier.padding(24.dp)
+                        )
+                    }
+                } else {
+                    LazyColumn(modifier = Modifier.fillMaxSize()) {
+                        items(activeItems, key = { it.conversation.id }) { item ->
+                            ActiveRow(
+                                item = item,
+                                onClick = { onOpenChat(item.conversation.id) }
                             )
                         }
                     }
-                } else {
-                    items(filtered, key = { it.conversation.id }) { item ->
-                        ConversationRow(
-                            item = item,
-                            online = !item.isGroup && item.peer != null && onlineIds.contains(item.peer.id),
-                            myId = myId,
-                            onClick = { onOpenChat(item.conversation.id) },
-                            onLongPress = { menuItem = item }
-                        )
-                    }
-                    // v3.1.0: Archived section — collapsed by default.
-                    // Archived chats stay archived when new messages
-                    // arrive; only Unarchive brings one back.
-                    if (filteredArchived.isNotEmpty()) {
-                        item(key = "archived-header") {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clickable { showArchived = !showArchived }
-                                    .padding(horizontal = 16.dp, vertical = 12.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
+                }
+            } else {
+                LazyColumn(modifier = Modifier.fillMaxSize()) {
+                    if (filtered.isEmpty() && filteredArchived.isEmpty()) {
+                        item {
+                            Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
                                 Text(
-                                    text = if (showArchived) "▼ Archived (${filteredArchived.size})"
-                                    else "▶ Archived (${filteredArchived.size})",
-                                    style = MaterialTheme.typography.titleMedium,
+                                    if (query.isBlank()) "No chats yet — add a friend to start chatting."
+                                    else "No chats match \"$query\".",
                                     color = colors.muted,
-                                    modifier = Modifier.weight(1f)
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    modifier = Modifier.padding(24.dp)
                                 )
                             }
                         }
-                        if (showArchived) {
-                            items(filteredArchived, key = { "archived-${it.conversation.id}" }) { item ->
-                                ConversationRow(
-                                    item = item,
-                                    online = false,
-                                    myId = myId,
-                                    onClick = { onOpenChat(item.conversation.id) },
-                                    onLongPress = { menuItem = item }
-                                )
+                    } else {
+                        items(filtered, key = { it.conversation.id }) { item ->
+                            ConversationRow(
+                                item = item,
+                                online = !item.isGroup && item.peer != null && onlineIds.contains(item.peer.id),
+                                myId = myId,
+                                onClick = { onOpenChat(item.conversation.id) },
+                                onLongPress = { menuItem = item }
+                            )
+                        }
+                        // v3.1.0: Archived section — collapsed by default.
+                        // Archived chats stay archived when new messages
+                        // arrive; only Unarchive brings one back.
+                        if (filteredArchived.isNotEmpty()) {
+                            item(key = "archived-header") {
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clickable { showArchived = !showArchived }
+                                        .padding(horizontal = 16.dp, vertical = 12.dp),
+                                    verticalAlignment = Alignment.CenterVertically
+                                ) {
+                                    Text(
+                                        text = if (showArchived) "▼ Archived (${filteredArchived.size})"
+                                        else "▶ Archived (${filteredArchived.size})",
+                                        style = MaterialTheme.typography.titleMedium,
+                                        color = colors.muted,
+                                        modifier = Modifier.weight(1f)
+                                    )
+                                }
+                            }
+                            if (showArchived) {
+                                items(filteredArchived, key = { "archived-${it.conversation.id}" }) { item ->
+                                    ConversationRow(
+                                        item = item,
+                                        online = false,
+                                        myId = myId,
+                                        onClick = { onOpenChat(item.conversation.id) },
+                                        onLongPress = { menuItem = item }
+                                    )
+                                }
                             }
                         }
                     }
                 }
             }
+        }
+
+        // v3.2.0 FAB (mockup): green circle, bottom-right, floating
+        // above the bottom nav (88.dp bottom padding). Opens the
+        // EXISTING new-chat/group flow (showCreateGroup dialog).
+        FloatingActionButton(
+            onClick = { showCreateGroup = true },
+            containerColor = Emerald,
+            contentColor = Color.White,
+            shape = CircleShape,
+            modifier = Modifier
+                .align(Alignment.BottomEnd)
+                .padding(end = 16.dp, bottom = 88.dp)
+        ) {
+            Icon(Icons.Default.Group, contentDescription = "New chat or group")
         }
     }
 
@@ -334,9 +423,17 @@ fun ChatsScreen(viewModel: ChatsViewModel, onOpenChat: (String) -> Unit) {
     }
 }
 
-/** Small pill tab under the search bar (Chat / Active). */
+/** Small pill tab under the search bar (Chat / Active), mockup style:
+ *  selected pill is green with white text; "Chat" also shows a chat
+ *  icon, "Active" shows a green dot (white when selected). */
 @Composable
-private fun ChatTabChip(text: String, selected: Boolean, onClick: () -> Unit) {
+private fun ChatTabChip(
+    text: String,
+    selected: Boolean,
+    onClick: () -> Unit,
+    showChatIcon: Boolean = false,
+    showDot: Boolean = false
+) {
     val colors = pingChatColors
     Box(
         modifier = Modifier
@@ -346,12 +443,93 @@ private fun ChatTabChip(text: String, selected: Boolean, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 8.dp),
         contentAlignment = Alignment.Center
     ) {
-        Text(
-            text = text,
-            color = if (selected) Color.White else colors.text,
-            style = MaterialTheme.typography.bodyMedium,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
-        )
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            if (showChatIcon) {
+                Icon(
+                    Icons.Default.ChatBubble,
+                    contentDescription = null,
+                    tint = if (selected) Color.White else colors.muted,
+                    modifier = Modifier.size(16.dp)
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            if (showDot) {
+                Box(
+                    modifier = Modifier
+                        .size(8.dp)
+                        .clip(CircleShape)
+                        .background(if (selected) Color.White else Emerald)
+                )
+                Spacer(Modifier.width(6.dp))
+            }
+            Text(
+                text = text,
+                color = if (selected) Color.White else colors.text,
+                style = MaterialTheme.typography.bodyMedium,
+                fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal
+            )
+        }
+    }
+}
+
+/**
+ * 56dp profile avatar with an optional online dot — same photo /
+ * initials / dot geometry as ui.components.Avatar, sized up for the
+ * mockup chat rows. (AvatarSize has no 56dp entry and Avatar.kt is
+ * outside this worker's files, so this local copy keeps the size
+ * without touching that file.)
+ */
+@Composable
+private fun ChatAvatar(profile: Profile?, online: Boolean?) {
+    val name = profile?.fullName?.ifBlank { profile?.username } ?: "?"
+    val bg = colorFor(profile?.id ?: name)
+    val cardColor = MaterialTheme.colorScheme.surface
+    Box(modifier = Modifier.size(56.dp)) {
+        Box(
+            modifier = Modifier
+                .size(56.dp)
+                .clip(CircleShape)
+                .background(bg),
+            contentAlignment = Alignment.Center
+        ) {
+            val url = profile?.avatarUrl
+            if (!url.isNullOrBlank() && url.startsWith("https://")) {
+                AsyncImage(
+                    model = url,
+                    contentDescription = name,
+                    modifier = Modifier
+                        .size(56.dp)
+                        .clip(CircleShape),
+                    contentScale = ContentScale.Crop
+                )
+            } else {
+                Text(
+                    text = initials(name),
+                    color = Color.White,
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 20.sp
+                )
+            }
+        }
+        if (online != null) {
+            Box(
+                modifier = Modifier
+                    .align(Alignment.BottomEnd)
+                    .offset(x = 2.dp, y = 2.dp)
+                    .size(18.dp)
+                    .clip(CircleShape)
+                    .background(cardColor)
+                    .border(1.dp, cardColor, CircleShape),
+                contentAlignment = Alignment.Center
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(14.dp)
+                        .clip(CircleShape)
+                        .background(if (online) Color(0xFF22C55E) else Color(0xFF94A3B8))
+                )
+            }
+        }
     }
 }
 
@@ -366,12 +544,13 @@ private fun ActiveRow(item: ConversationItem, onClick: () -> Unit) {
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Avatar(profile = item.peer, size = AvatarSize.MD, online = true)
-        Spacer(Modifier.width(12.dp))
+        ChatAvatar(profile = item.peer, online = true)
+        Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Text(
                 text = item.displayName,
-                style = MaterialTheme.typography.titleMedium,
+                fontSize = 17.sp,
+                fontWeight = FontWeight.SemiBold,
                 color = colors.text,
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis
@@ -434,13 +613,15 @@ private fun ConversationRow(
             .padding(horizontal = 16.dp, vertical = 12.dp),
         verticalAlignment = Alignment.CenterVertically
     ) {
-        Avatar(profile = avatarProfile, size = AvatarSize.MD, online = if (item.isGroup) null else online)
-        Spacer(Modifier.width(12.dp))
+        // v3.2.0: larger 56dp avatars (mockup).
+        ChatAvatar(profile = avatarProfile, online = if (item.isGroup) null else online)
+        Spacer(Modifier.width(14.dp))
         Column(modifier = Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = item.displayName,
-                    style = MaterialTheme.typography.titleMedium,
+                    fontSize = 17.sp,
+                    fontWeight = FontWeight.SemiBold,
                     color = colors.text,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -469,7 +650,7 @@ private fun ConversationRow(
                     Spacer(Modifier.width(8.dp))
                     Text(
                         text = TimeFormat.fmtListTime(last.createdAt),
-                        style = MaterialTheme.typography.bodySmall,
+                        fontSize = 12.sp,
                         color = colors.muted
                     )
                 }
@@ -478,7 +659,7 @@ private fun ConversationRow(
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     text = preview,
-                    style = MaterialTheme.typography.bodyMedium,
+                    fontSize = 15.sp,
                     color = colors.muted,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -488,15 +669,15 @@ private fun ConversationRow(
                     Spacer(Modifier.width(8.dp))
                     Box(
                         modifier = Modifier
-                            .size(20.dp)
+                            .size(22.dp)
                             .clip(CircleShape)
                             .background(Emerald),
                         contentAlignment = Alignment.Center
                     ) {
                         Text(
                             text = if (item.unreadCount > 99) "99+" else item.unreadCount.toString(),
-                            color = androidx.compose.ui.graphics.Color.White,
-                            style = MaterialTheme.typography.bodySmall,
+                            color = Color.White,
+                            fontSize = 12.sp,
                             fontWeight = FontWeight.Bold
                         )
                     }

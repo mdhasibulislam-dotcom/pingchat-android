@@ -1,6 +1,7 @@
 package com.mdhasibulislam.pingchat.ui.screens
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.net.Uri
 import android.widget.Toast
@@ -69,6 +70,8 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalClipboardManager
@@ -104,6 +107,7 @@ import com.mdhasibulislam.pingchat.data.ProfileRepository
 import com.mdhasibulislam.pingchat.data.PushSender
 import com.mdhasibulislam.pingchat.data.Reaction
 import com.mdhasibulislam.pingchat.data.SessionManager
+import com.mdhasibulislam.pingchat.data.Supabase
 import com.mdhasibulislam.pingchat.data.TickState
 import com.mdhasibulislam.pingchat.data.TimeFormat
 import com.mdhasibulislam.pingchat.data.PrivacyRepository
@@ -125,7 +129,11 @@ import com.mdhasibulislam.pingchat.ui.theme.WhatsAppTickGrey
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.CallViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ChatViewModel
+import io.github.jan.supabase.postgrest.from
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 
 class ChatViewModelFactory(private val conversationId: String) : ViewModelProvider.Factory {
     override fun <T : ViewModel> create(modelClass: Class<T>): T {
@@ -172,7 +180,13 @@ fun ChatScreen(
      * navController.navigate("chat/$id") (the same lambda MainScreen
      * already gets as onOpenChat).
      */
-    onOpenChat: (String) -> Unit = {}
+    onOpenChat: (String) -> Unit = {},
+    /**
+     * v3.2.0 (worker F): the peer profile's "Privacy & Security" row
+     * opens the global Privacy & Security screen — MainActivity wires
+     * this to navController.navigate("privacy_security").
+     */
+    onOpenPrivacySecurity: () -> Unit = {}
 ) {
     val factory = remember(conversationId) { ChatViewModelFactory(conversationId) }
     val viewModel: ChatViewModel = viewModel(factory = factory)
@@ -225,6 +239,7 @@ fun ChatScreen(
     var viewingPhoto by remember { mutableStateOf<ChatMessage?>(null) }
     // v3.1.0: search bar, forward picker, group settings overlay.
     var showSearch by remember { mutableStateOf(false) }
+    val searchFocus = remember { FocusRequester() }
     var forwardMessage by remember { mutableStateOf<ChatMessage?>(null) }
     var showGroupSettings by remember { mutableStateOf(false) }
 
@@ -247,6 +262,15 @@ fun ChatScreen(
     var profileVisibility by remember { mutableStateOf<Pair<Boolean, Boolean>?>(null) }
     var peerBlocked by remember { mutableStateOf(false) }
     var chatMuted by remember { mutableStateOf(false) }
+    // v3.2.0 (worker F): flags the peer contact-info screen shows —
+    // loaded in the LaunchedEffect(showProfile) below when it opens.
+    var chatPinned by remember { mutableStateOf(false) }
+    var chatArchived by remember { mutableStateOf(false) }
+    var chatTheme by remember(conversationId) { mutableStateOf(prefs.chatTheme(conversationId)) }
+    // v3.2.0: Delete Chat (peer profile) clears, then goes back to the
+    // chats list — set by the profile's onDeleteChat, read by the
+    // confirmClear dialog's confirm button.
+    var clearThenBack by remember { mutableStateOf(false) }
     var showCreateGroup by remember { mutableStateOf(false) }
     var confirmBlock by remember { mutableStateOf(false) }
 
@@ -311,10 +335,44 @@ fun ChatScreen(
         publicProfile = profile
     }
 
+    /**
+     * v3.2.0 (worker F): open the WhatsApp-style contact-info screen
+     * for the chat peer (ChatPeerProfileScreen). The flags it needs
+     * load in the LaunchedEffect(showProfile) below. Groups never
+     * reach here — their header opens group settings instead.
+     */
+    fun openPeerProfile() {
+        if (peer == null) return
+        showProfile = true
+    }
+
     // (Re)load the profile data whenever a different profile opens.
     LaunchedEffect(publicProfile?.id) {
         val profile = publicProfile ?: return@LaunchedEffect
         loadPublicProfileState(profile)
+    }
+
+    // v3.2.0 (worker F): when the peer contact-info screen opens, load
+    // the flags it shows — blocked / muted / pinned / archived / theme.
+    // (loadPublicProfileState above only runs for PublicProfileScreen.)
+    LaunchedEffect(showProfile) {
+        if (!showProfile) return@LaunchedEffect
+        val p = peer ?: return@LaunchedEffect
+        peerBlocked = try {
+            privacyRepo.isBlockedByMe(p.id)
+        } catch (_: Exception) {
+            false
+        }
+        chatMuted = prefs.mutedConversationIds.contains(conversationId)
+        val item = try {
+            chatRepo.loadConversations()
+                .firstOrNull { it.conversation.id == conversationId }
+        } catch (_: Exception) {
+            null
+        }
+        chatPinned = item?.isPinned == true
+        chatArchived = item?.isArchived == true
+        chatTheme = prefs.chatTheme(conversationId)
     }
 
     // Gallery picker (photo only — no video, no camera in this version).
@@ -612,10 +670,19 @@ fun ChatScreen(
         if (index >= 0) listState.scrollToItem(index)
     }
 
+    // v3.2.0: opening the search (from the peer profile's Search button)
+    // focuses the search field at once, so the keyboard opens with it.
+    LaunchedEffect(showSearch) {
+        if (showSearch) searchFocus.requestFocus()
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
-            .background(colors.chatBg)
+            // v3.2.0 (worker F): per-chat theme — the peer profile's Chat
+            // Theme choice replaces the normal chat background for this
+            // conversation; "default" keeps colors.chatBg.
+            .background(chatThemeColor(chatTheme, colors.chatBg))
     ) {
         // Header, WhatsApp-style: back, avatar + name + status,
         // video call, audio call, more (profile). statusBarsPadding keeps
@@ -654,7 +721,7 @@ fun ChatScreen(
                 size = AvatarSize.SM,
                 online = if (isGroup) null else peerOnline,
                 modifier = if (isGroup) Modifier else Modifier.clickable {
-                    peer?.let { openPublicProfile(it) }
+                    openPeerProfile()
                 }
             )
             Spacer(Modifier.width(10.dp))
@@ -663,7 +730,7 @@ fun ChatScreen(
                     .weight(1f)
                     .then(
                         if (isGroup) Modifier.clickable { showGroupSettings = true }
-                        else Modifier.clickable { peer?.let { openPublicProfile(it) } }
+                        else Modifier.clickable { openPeerProfile() }
                     )
             ) {
                 Text(
@@ -703,7 +770,7 @@ fun ChatScreen(
                     Icon(Icons.Default.Phone, contentDescription = "Audio call", tint = colors.text)
                 }
             }
-            IconButton(onClick = { if (isGroup) showGroupSettings = true else showProfile = true }) {
+            IconButton(onClick = { if (isGroup) showGroupSettings = true else openPeerProfile() }) {
                 Icon(Icons.Default.MoreVert, contentDescription = "More", tint = colors.text)
             }
         }
@@ -748,7 +815,9 @@ fun ChatScreen(
                         unfocusedIndicatorColor = Color.Transparent,
                         disabledIndicatorColor = Color.Transparent
                     ),
-                    modifier = Modifier.weight(1f)
+                    modifier = Modifier
+                        .weight(1f)
+                        .focusRequester(searchFocus)
                 )
                 if (searchMatches.isNotEmpty()) {
                     Text(
@@ -822,6 +891,18 @@ fun ChatScreen(
                     TextButton(onClick = {
                         confirmClear = false
                         viewModel.clearChat()
+                        // v3.2.0: Delete Chat (peer profile) goes back to
+                        // the chats list after clearing. The clear RPC is
+                        // a single quick call — give it a head start so
+                        // leaving the screen (which clears the ViewModel)
+                        // cannot cancel it mid-flight.
+                        if (clearThenBack) {
+                            clearThenBack = false
+                            scope.launch {
+                                delay(500)
+                                onBack()
+                            }
+                        }
                     }) { Text("Clear") }
                 },
                 dismissButton = {
@@ -1203,46 +1284,197 @@ fun ChatScreen(
         }
     }
 
-    // Peer profile preview (the peer is always a friend here — info + Close).
+    // v3.2.0 (worker F): WhatsApp-style contact-info screen for the
+    // 1-to-1 peer (mockups 7433_0_9gjz.png + 7434_1_aa8a.png) — replaces
+    // ProfilePreviewDialog. Full-screen dialog overlay, same pattern as
+    // the group-settings overlay. All actions reuse the existing pieces:
+    // calls (requestCall), in-chat search, create-group, mute
+    // (setChatMuted + Prefs), clear chat (confirmClear), shared media
+    // (fullscreen photo viewer), pin (one pinned message per chat),
+    // block/unblock (confirmBlock), archive/pin (participant flags),
+    // share (profileShareLink), report (pingchat_reports).
     if (showProfile) {
         val p = peer
-        if (p != null) {
-            ProfilePreviewDialog(
-                profile = p,
-                state = FriendState.FRIENDS,
-                online = peerOnline,
-                showMessageButton = false,
-                onMessage = {},
-                onAddFriend = {},
-                onCancelRequest = {},
-                onAccept = {},
-                onDecline = {},
-                onDismiss = { showProfile = false },
-                onClearChat = { showProfile = false; confirmClear = true },
-                // v3.1.1: the ⋮ menu's "View profile" opens the full
-                // public profile (same screen as the header tap).
-                onViewProfile = { showProfile = false; peer?.let { openPublicProfile(it) } }
-            )
+        if (p != null && !isGroup) {
+            val peerName = p.fullName.ifBlank { p.username }
+            val sharedPhotos = messages.filter { it.kind == "photo" && !isMediaExpired(it) }
+            Dialog(
+                onDismissRequest = { showProfile = false },
+                properties = DialogProperties(usePlatformDefaultWidth = false)
+            ) {
+                ChatPeerProfileScreen(
+                    profile = p,
+                    online = peerOnline,
+                    canSeeLastSeen = canSeePeerLastSeen,
+                    sharedPhotosCount = sharedPhotos.size,
+                    // One pinned message per chat (ChatViewModel) — the
+                    // "Starred Messages" count is 0 or 1, and tapping it
+                    // jumps to that pinned message.
+                    pinnedCount = if (pinnedMessage != null) 1 else 0,
+                    isBlocked = peerBlocked,
+                    isMuted = chatMuted,
+                    isPinned = chatPinned,
+                    isArchived = chatArchived,
+                    chatTheme = chatTheme,
+                    onBack = { showProfile = false },
+                    onAudioCall = { requestCall("audio") },
+                    onVideoCall = { requestCall("video") },
+                    onSearch = { showProfile = false; showSearch = true },
+                    onCreateGroup = { showCreateGroup = true },
+                    onMuteToggle = {
+                        val next = !chatMuted
+                        scope.launch {
+                            val ok = try {
+                                chatRepo.setChatMuted(conversationId, next)
+                            } catch (_: Exception) {
+                                false
+                            }
+                            if (ok) {
+                                prefs.setConversationMuted(conversationId, next)
+                                chatMuted = next
+                            } else {
+                                Toast.makeText(context, "Could not change mute setting. Try again.", Toast.LENGTH_SHORT).show()
+                            }
+                        }
+                    },
+                    onClearChat = { showProfile = false; confirmClear = true },
+                    onSharedMedia = {
+                        // Opens the newest shared photo in the existing
+                        // fullscreen viewer.
+                        messages.lastOrNull { it.kind == "photo" && !isMediaExpired(it) }?.let {
+                            showProfile = false
+                            viewingPhoto = it
+                        } ?: Toast.makeText(context, "No shared media yet.", Toast.LENGTH_SHORT).show()
+                    },
+                    onOpenPinned = {
+                        val pinned = pinnedMessage
+                        showProfile = false
+                        if (pinned != null) {
+                            val index = displayItems.indexOfFirst {
+                                it is ChatListItem.Msg && it.message.id == pinned.id
+                            }
+                            if (index >= 0) scope.launch { listState.scrollToItem(index) }
+                        } else {
+                            Toast.makeText(context, "No pinned messages yet.", Toast.LENGTH_SHORT).show()
+                        }
+                    },
+                    onBlockToggle = {
+                        if (peerBlocked) {
+                            scope.launch {
+                                try { privacyRepo.unblockUser(p.id) } catch (_: Exception) { }
+                                peerBlocked = false
+                                Toast.makeText(context, "$peerName unblocked.", Toast.LENGTH_SHORT).show()
+                            }
+                        } else {
+                            confirmBlock = true
+                        }
+                    },
+                    onDeleteChat = {
+                        showProfile = false
+                        clearThenBack = true
+                        confirmClear = true
+                    },
+                    onOpenPrivacySecurity = onOpenPrivacySecurity,
+                    onPinToggle = {
+                        val next = !chatPinned
+                        scope.launch {
+                            val ok = try {
+                                chatRepo.setChatPinned(conversationId, next)
+                            } catch (_: Exception) {
+                                false
+                            }
+                            if (ok) chatPinned = next
+                            else Toast.makeText(
+                                context,
+                                "Could not ${if (next) "pin" else "unpin"} this chat. Try again.",
+                                Toast.LENGTH_SHORT
+                            ).show()
+                        }
+                    },
+                    onArchiveToggle = {
+                        val next = !chatArchived
+                        scope.launch {
+                            val ok = try {
+                                chatRepo.setChatArchived(conversationId, next)
+                            } catch (_: Exception) {
+                                false
+                            }
+                            if (ok) {
+                                chatArchived = next
+                                if (next) {
+                                    // Archived chats leave the main list —
+                                    // go back to it.
+                                    showProfile = false
+                                    onBack()
+                                }
+                            } else {
+                                Toast.makeText(
+                                    context,
+                                    "Could not ${if (next) "archive" else "unarchive"} this chat. Try again.",
+                                    Toast.LENGTH_SHORT
+                                ).show()
+                            }
+                        }
+                    },
+                    onShareContact = {
+                        val link = profileShareLink(p.username)
+                        val sendIntent = Intent(Intent.ACTION_SEND).apply {
+                            type = "text/plain"
+                            putExtra(Intent.EXTRA_TEXT, "@${p.username}\n$link")
+                        }
+                        context.startActivity(
+                            Intent.createChooser(sendIntent, "Share contact")
+                        )
+                    },
+                    // Report (web spec §6.6): the Android app had no
+                    // report UI before v3.2.0 — this inserts into
+                    // pingchat_reports (RLS: reporter_id = auth.uid()),
+                    // same 5 reasons + optional details as the web app.
+                    // There is no admin review UI in the app; reports
+                    // are stored only.
+                    onReportSubmit = { reason, details ->
+                        val me = chatRepo.myId()
+                        if (me == null) {
+                            Toast.makeText(context, "Could not send report. Try again.", Toast.LENGTH_SHORT).show()
+                        } else {
+                            scope.launch {
+                                try {
+                                    Supabase.client.from("pingchat_reports").insert(
+                                        buildJsonObject {
+                                            put("reporter_id", me)
+                                            put("reported_id", p.id)
+                                            put("reason", reason)
+                                            put("details", details)
+                                        }
+                                    )
+                                    Toast.makeText(context, "Thanks, your report was sent.", Toast.LENGTH_SHORT).show()
+                                } catch (_: Exception) {
+                                    Toast.makeText(context, "Could not send report. Try again.", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }
+                    },
+                    onChatThemeSelected = { key ->
+                        prefs.setChatTheme(conversationId, key)
+                        chatTheme = key
+                    }
+                )
+            }
         }
     }
 
-    // v3.1.1: full public profile opened from the chat header or the ⋮
-    // menu (1-to-1 only). WhatsApp-style contact info: the same
-    // PublicProfileScreen the People tab opens (cover, avatar, name,
-    // username, online / last seen, status, bio, badges, Message / call
-    // buttons, mutual friends, social links, city / education, share +
-    // QR) plus a contact-actions footer for the chat peer — Mute
+    // v3.2.0: full public profile opened from the chat header or the ⋮
+    // menu (1-to-1 only). The WhatsApp-style contact actions — Mute
     // notifications, Create a group with them, shared-media count, and
-    // Block / Unblock — wired to the existing repos (ChatRepository,
-    // CreateGroupScreen's group-create flow, PrivacyRepository's
-    // pingchat_blocks table). No new backend features. The footer lives
-    // here, under the screen, because PublicProfileScreen itself is
-    // another worker's file; moving the rows into it is a later cleanup.
+    // Block / Unblock — now live INSIDE PublicProfileScreen (wired via
+    // its on* callbacks below); the old footer under the screen is gone.
+    // No new backend features.
     val openProfile = publicProfile
     if (openProfile != null) {
         val myPeer = peer
         val isChatPeer = myPeer != null && openProfile.id == myPeer.id
         val peerName = openProfile.fullName.ifBlank { openProfile.username }
+        val sharedPhotos = if (isChatPeer) messages.filter { it.kind == "photo" && !isMediaExpired(it) } else emptyList()
         Dialog(
             onDismissRequest = { publicProfile = null },
             properties = DialogProperties(usePlatformDefaultWidth = false)
@@ -1313,63 +1545,11 @@ fun ChatScreen(
                                 loadPublicProfileState(openProfile)
                             }
                         },
-                        onOpenProfile = { other -> openPublicProfile(other) }
-                    )
-                }
-                // Contact-actions footer.
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .background(colors.card)
-                        .navigationBarsPadding()
-                        .padding(horizontal = 16.dp, vertical = 8.dp)
-                ) {
-                    if (isChatPeer) {
-                        val sharedPhotos = messages.filter { it.kind == "photo" && !isMediaExpired(it) }
-                        ContactActionRow(
-                            label = "Mute notifications",
-                            detail = if (chatMuted) "On" else "Off",
-                            onClick = {
-                                val next = !chatMuted
-                                scope.launch {
-                                    val ok = try {
-                                        chatRepo.setChatMuted(conversationId, next)
-                                    } catch (_: Exception) {
-                                        false
-                                    }
-                                    if (ok) {
-                                        prefs.setConversationMuted(conversationId, next)
-                                        chatMuted = next
-                                    } else {
-                                        Toast.makeText(context, "Could not change mute setting. Try again.", Toast.LENGTH_SHORT).show()
-                                    }
-                                }
-                            }
-                        )
-                        ContactActionRow(
-                            label = "Create a group with $peerName",
-                            detail = null,
-                            onClick = { showCreateGroup = true }
-                        )
-                        ContactActionRow(
-                            label = "Shared media",
-                            detail = if (sharedPhotos.isEmpty()) "No photos yet"
-                            else "${sharedPhotos.size} photo${if (sharedPhotos.size == 1) "" else "s"}",
-                            onClick = {
-                                // Opens the newest shared photo in the
-                                // existing fullscreen viewer.
-                                messages.lastOrNull { it.kind == "photo" && !isMediaExpired(it) }?.let {
-                                    publicProfile = null
-                                    viewingPhoto = it
-                                }
-                            }
-                        )
-                    }
-                    ContactActionRow(
-                        label = if (peerBlocked) "Unblock $peerName" else "Block $peerName",
-                        detail = null,
-                        destructive = true,
-                        onClick = {
+                        onOpenProfile = { other -> openPublicProfile(other) },
+                        isBlocked = peerBlocked,
+                        isMuted = chatMuted,
+                        sharedMediaCount = sharedPhotos.size,
+                        onBlockToggle = {
                             if (peerBlocked) {
                                 scope.launch {
                                     try { privacyRepo.unblockUser(openProfile.id) } catch (_: Exception) { }
@@ -1379,7 +1559,32 @@ fun ChatScreen(
                             } else {
                                 confirmBlock = true
                             }
-                        }
+                        },
+                        onCreateGroup = if (isChatPeer) ({ showCreateGroup = true }) else null,
+                        onMuteToggle = if (isChatPeer) ({
+                            val next = !chatMuted
+                            scope.launch {
+                                val ok = try {
+                                    chatRepo.setChatMuted(conversationId, next)
+                                } catch (_: Exception) {
+                                    false
+                                }
+                                if (ok) {
+                                    prefs.setConversationMuted(conversationId, next)
+                                    chatMuted = next
+                                } else {
+                                    Toast.makeText(context, "Could not change mute setting. Try again.", Toast.LENGTH_SHORT).show()
+                                }
+                            }
+                        }) else null,
+                        onSharedMedia = if (isChatPeer) ({
+                            // Opens the newest shared photo in the
+                            // existing fullscreen viewer.
+                            messages.lastOrNull { it.kind == "photo" && !isMediaExpired(it) }?.let {
+                                publicProfile = null
+                                viewingPhoto = it
+                            }
+                        }) else null
                     )
                 }
             }
@@ -1396,11 +1601,17 @@ fun ChatScreen(
             CreateGroupScreen(
                 onGroupCreated = { id ->
                     showCreateGroup = false
+                    showProfile = false
                     publicProfile = null
                     onOpenChat(id)
                 },
                 onDismiss = { showCreateGroup = false },
-                initialSelectedIds = publicProfile?.id?.let { setOf(it) } ?: emptySet()
+                // v3.2.0: creating a group from the peer contact-info
+                // screen pre-selects the chat peer (publicProfile is
+                // null on that path — it only exists for the old
+                // PublicProfileScreen flow).
+                initialSelectedIds = publicProfile?.id?.let { setOf(it) }
+                    ?: peer?.id?.let { setOf(it) } ?: emptySet()
             )
         }
     }
@@ -1408,7 +1619,10 @@ fun ChatScreen(
     // v3.1.1: confirm before blocking — blocking silences the peer
     // everywhere (messages, calls, friend requests).
     if (confirmBlock) {
-        val target = publicProfile
+        // v3.2.0: the block can now also come from the peer contact-info
+        // screen (ChatPeerProfileScreen), where publicProfile is null —
+        // fall back to the chat peer.
+        val target = publicProfile ?: peer
         AlertDialog(
             onDismissRequest = { confirmBlock = false },
             title = { Text("Block ${target?.fullName?.ifBlank { target?.username } ?: "this user"}?") },
@@ -1820,38 +2034,6 @@ private fun MetaRow(timeText: String, tickState: TickState?, mine: Boolean) {
         if (mine && tickState != null) {
             Spacer(Modifier.width(2.dp))
             TickIcon(state = tickState, onBubble = true)
-        }
-    }
-}
-
-/** One WhatsApp-style contact-info action row in the profile footer. */
-@Composable
-private fun ContactActionRow(
-    label: String,
-    detail: String?,
-    onClick: () -> Unit,
-    destructive: Boolean = false
-) {
-    val colors = pingChatColors
-    Row(
-        modifier = Modifier
-            .fillMaxWidth()
-            .clickable(onClick = onClick)
-            .padding(vertical = 12.dp),
-        verticalAlignment = Alignment.CenterVertically
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.bodyLarge,
-            color = if (destructive) MaterialTheme.colorScheme.error else colors.text,
-            modifier = Modifier.weight(1f)
-        )
-        if (detail != null) {
-            Text(
-                text = detail,
-                style = MaterialTheme.typography.bodyMedium,
-                color = colors.muted
-            )
         }
     }
 }

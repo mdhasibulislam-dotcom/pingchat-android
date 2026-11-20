@@ -5,7 +5,6 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,10 +20,11 @@ import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ArrowBack
 import androidx.compose.material.icons.filled.CameraAlt
+import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.DateRange
 import androidx.compose.material.icons.filled.Edit
@@ -38,7 +38,6 @@ import androidx.compose.material.icons.filled.School
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Visibility
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
@@ -46,15 +45,11 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -65,11 +60,10 @@ import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import coil.compose.AsyncImage
-import com.mdhasibulislam.pingchat.data.SocialLinks
+import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.TimeFormat
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
@@ -80,27 +74,22 @@ import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-/** WhatsApp-style About presets (tap one to fill the About field). */
-private val AboutPresets = listOf(
-    "Available", "Busy", "At work", "In a meeting", "Sleeping", "Urgent calls only"
-)
-
-/** Theme colour presets for the public profile header (v3.1.0). */
-private val ThemeColorPresets = listOf(
-    "Default" to null,
-    "Emerald" to "#10B981",
-    "Blue" to "#3B82F6",
-    "Purple" to "#8B5CF6",
-    "Pink" to "#EC4899",
-    "Orange" to "#F97316"
-)
-
-/** My profile, WhatsApp-style: cover banner, photo, About, phone, stats, info rows. */
+/**
+ * My profile — VIEW ONLY (v3.2.0 mockup style: white cards, rounded 16dp
+ * corners, green primary #059669, clean Material icons). Editing moved to
+ * [EditProfileScreen], reached via [onEditProfileClick]. Cover photo
+ * (existing 'covers' bucket) and avatar can still be changed from here
+ * via the camera buttons.
+ */
 @Composable
-fun ProfileScreen(viewModel: ProfileViewModel, onSettingsClick: () -> Unit) {
+fun ProfileScreen(
+    viewModel: ProfileViewModel,
+    onBack: () -> Unit = {},
+    onSettingsClick: () -> Unit,
+    onEditProfileClick: () -> Unit = {}
+) {
     val profile by viewModel.profile.collectAsState()
     val user by viewModel.user.collectAsState()
-    val saving by viewModel.saving.collectAsState()
     val uploading by viewModel.uploading.collectAsState()
     val error by viewModel.error.collectAsState()
     val info by viewModel.info.collectAsState()
@@ -111,23 +100,14 @@ fun ProfileScreen(viewModel: ProfileViewModel, onSettingsClick: () -> Unit) {
     val viewCount by viewModel.viewCount.collectAsState()
     val recentViewers by viewModel.recentViewers.collectAsState()
     val uploadingCover by viewModel.uploadingCover.collectAsState()
+    val onlineIds by SessionManager.onlineIds.collectAsState()
     val colors = pingChatColors
     val context = LocalContext.current
     val clipboard = LocalClipboardManager.current
 
-    var editing by remember { mutableStateOf(false) }
-    var name by remember(profile?.fullName) { mutableStateOf(profile?.fullName ?: "") }
-    var bio by remember(profile?.bio) { mutableStateOf(profile?.bio ?: "") }
-    var phone by remember(profile?.phone) { mutableStateOf(profile?.phone ?: "") }
-    var isPublic by remember(profile?.isPublic) { mutableStateOf(profile?.isPublic ?: true) }
-    // v3.1.0 extended fields.
-    var city by remember(profile?.city) { mutableStateOf(profile?.city ?: "") }
-    var education by remember(profile?.education) { mutableStateOf(profile?.education ?: "") }
-    var statusLine by remember(profile?.statusLine) { mutableStateOf(profile?.statusLine ?: "") }
-    var facebook by remember(profile?.socialLinks) { mutableStateOf(profile?.socialLinks?.facebook ?: "") }
-    var instagram by remember(profile?.socialLinks) { mutableStateOf(profile?.socialLinks?.instagram ?: "") }
-    var github by remember(profile?.socialLinks) { mutableStateOf(profile?.socialLinks?.github ?: "") }
-    var themeColor by remember(profile?.themeColor) { mutableStateOf(profile?.themeColor ?: "") }
+    // Own online state: live presence first, profile flag as fallback.
+    val isOnline = profile?.online == true ||
+        (user?.uid != null && onlineIds.contains(user!!.uid))
 
     val picker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
@@ -146,7 +126,6 @@ fun ProfileScreen(viewModel: ProfileViewModel, onSettingsClick: () -> Unit) {
         viewModel.uploadAvatar(bytes, ext, mime)
     }
 
-    // v3.1.0: cover photo picker — same image handling as the avatar.
     val coverPicker = rememberLauncherForActivityResult(ActivityResultContracts.GetContent()) { uri: Uri? ->
         if (uri == null) return@rememberLauncherForActivityResult
         val bytes = try {
@@ -178,9 +157,20 @@ fun ProfileScreen(viewModel: ProfileViewModel, onSettingsClick: () -> Unit) {
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().verticalScroll(rememberScrollState())
+        modifier = Modifier.fillMaxSize().background(colors.bg).verticalScroll(rememberScrollState())
     ) {
-        // Cover banner (photo when set, else gradient) with the photo
+        // Top bar with back arrow.
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 4.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            IconButton(onClick = onBack) {
+                Icon(Icons.Default.ArrowBack, contentDescription = "Back", tint = colors.text)
+            }
+            Text("Profile", style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.Bold, color = colors.text)
+        }
+
+        // Cover banner (photo when set, else gradient) with the avatar
         // overlapping its bottom edge, plus a change-cover button.
         Box(modifier = Modifier.fillMaxWidth().height(180.dp)) {
             val coverUrl = profile?.coverPhotoUrl
@@ -214,22 +204,19 @@ fun ProfileScreen(viewModel: ProfileViewModel, onSettingsClick: () -> Unit) {
                 contentAlignment = Alignment.BottomEnd
             ) {
                 Avatar(profile = profile, size = AvatarSize.LG)
-                IconButton(
-                    onClick = { picker.launch("image/*") },
-                    modifier = Modifier.size(36.dp).clip(CircleShape)
+                // Green camera badge on the avatar: tap = change photo.
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(CircleShape)
+                        .background(Emerald)
+                        .clickable { picker.launch("image/*") },
+                    contentAlignment = Alignment.Center
                 ) {
-                    Box(
-                        modifier = Modifier.size(36.dp).clip(CircleShape),
-                        contentAlignment = Alignment.Center
-                    ) {
-                        androidx.compose.foundation.Canvas(modifier = Modifier.size(36.dp)) {
-                            drawCircle(color = Emerald)
-                        }
-                        if (uploading) {
-                            CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
-                        } else {
-                            Icon(Icons.Default.CameraAlt, contentDescription = "Change photo", tint = Color.White, modifier = Modifier.size(18.dp))
-                        }
+                    if (uploading) {
+                        CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp, color = Color.White)
+                    } else {
+                        Icon(Icons.Default.CameraAlt, contentDescription = "Change photo", tint = Color.White, modifier = Modifier.size(18.dp))
                     }
                 }
             }
@@ -240,7 +227,7 @@ fun ProfileScreen(viewModel: ProfileViewModel, onSettingsClick: () -> Unit) {
             modifier = Modifier.fillMaxWidth().padding(horizontal = 24.dp),
             horizontalAlignment = Alignment.CenterHorizontally
         ) {
-            // Name + verified badge (v3.1.0).
+            // Name + verified badge.
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Text(
                     profile?.fullName?.ifBlank { profile?.username } ?: "…",
@@ -269,13 +256,27 @@ fun ProfileScreen(viewModel: ProfileViewModel, onSettingsClick: () -> Unit) {
                 Spacer(Modifier.width(4.dp))
                 Icon(Icons.Default.ContentCopy, contentDescription = "Copy username", tint = colors.muted, modifier = Modifier.size(14.dp))
             }
+            // Green "Online" pill when online.
+            if (isOnline) {
+                Spacer(Modifier.height(8.dp))
+                Row(
+                    modifier = Modifier.clip(RoundedCornerShape(16.dp)).background(Emerald).padding(horizontal = 12.dp, vertical = 4.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier.size(8.dp).clip(CircleShape).background(Color.White)
+                    )
+                    Spacer(Modifier.width(6.dp))
+                    Text("Online", style = MaterialTheme.typography.bodySmall, fontWeight = FontWeight.Bold, color = Color.White)
+                }
+            }
             Spacer(Modifier.height(8.dp))
             Text(
                 profile?.bio?.ifBlank { "No bio yet." } ?: "No bio yet.",
                 style = MaterialTheme.typography.bodyMedium,
                 color = colors.text
             )
-            // v3.1.0: one-line status.
+            // One-line status.
             if (!profile?.statusLine.isNullOrBlank()) {
                 Spacer(Modifier.height(4.dp))
                 Text(
@@ -285,16 +286,24 @@ fun ProfileScreen(viewModel: ProfileViewModel, onSettingsClick: () -> Unit) {
                 )
             }
             if (memberSince.isNotBlank()) {
-                Spacer(Modifier.height(4.dp))
-                Text("Member since $memberSince", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                Spacer(Modifier.height(8.dp))
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.DateRange, contentDescription = null, tint = colors.muted, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Member since $memberSince", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                }
             }
             if (user?.email != null) {
                 Spacer(Modifier.height(4.dp))
-                Text("Signed in as ${user!!.email}", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.Email, contentDescription = null, tint = colors.muted, modifier = Modifier.size(14.dp))
+                    Spacer(Modifier.width(4.dp))
+                    Text("Signed in as ${user!!.email}", style = MaterialTheme.typography.bodySmall, color = colors.muted)
+                }
             }
 
             Spacer(Modifier.height(16.dp))
-            // Stats: friends, chats, photos sent, voice sent.
+            // Stats: friends, chats, photos sent, voice sent (all real counts).
             Row(modifier = Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceEvenly) {
                 Stat("$friendsCount", "Friends")
                 Stat("$chatsCount", "Chats")
@@ -312,269 +321,117 @@ fun ProfileScreen(viewModel: ProfileViewModel, onSettingsClick: () -> Unit) {
             }
 
             Spacer(Modifier.height(20.dp))
-            if (editing) {
-                OutlinedTextField(
-                    value = name,
-                    onValueChange = { name = it },
-                    label = { Text("Full name") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
+            // Info card.
+            Column(
+                modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(colors.card)
+            ) {
+                InfoRow(
+                    icon = Icons.Default.Info,
+                    label = "About",
+                    value = profile?.bio?.ifBlank { "—" } ?: "—"
                 )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = bio,
-                    onValueChange = { bio = it },
-                    label = { Text("About") },
-                    modifier = Modifier.fillMaxWidth()
+                HorizontalDivider(color = colors.border)
+                InfoRow(
+                    icon = Icons.Default.Phone,
+                    label = "Phone",
+                    value = profile?.phone?.ifBlank { "Add phone number" } ?: "Add phone number",
+                    onClick = onEditProfileClick
                 )
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    AboutPresets.forEach { preset ->
-                        AssistChip(onClick = { bio = preset }, label = { Text(preset) })
-                    }
+                HorizontalDivider(color = colors.border)
+                InfoRow(
+                    icon = Icons.Default.Person,
+                    label = "Username",
+                    value = "@${profile?.username ?: ""}",
+                    onClick = { clipboard.setText(AnnotatedString("@${profile?.username ?: ""}")) }
+                )
+                HorizontalDivider(color = colors.border)
+                InfoRow(
+                    icon = Icons.Default.Email,
+                    label = "Email",
+                    value = user?.email ?: "—"
+                )
+                HorizontalDivider(color = colors.border)
+                InfoRow(
+                    icon = Icons.Default.DateRange,
+                    label = "Member since",
+                    value = memberSince.ifBlank { "—" }
+                )
+                if (!profile?.city.isNullOrBlank()) {
+                    HorizontalDivider(color = colors.border)
+                    InfoRow(
+                        icon = Icons.Default.LocationOn,
+                        label = "City",
+                        value = profile?.city ?: "—"
+                    )
                 }
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = phone,
-                    onValueChange = { phone = it },
-                    label = { Text("Phone number") },
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(12.dp))
-                // v3.1.0 extended fields.
-                OutlinedTextField(
-                    value = statusLine,
-                    onValueChange = { statusLine = it },
-                    label = { Text("Status (one line — what are you doing now?)") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = city,
-                    onValueChange = { city = it },
-                    label = { Text("City") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = education,
-                    onValueChange = { education = it },
-                    label = { Text("Education") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = facebook,
-                    onValueChange = { facebook = it },
-                    label = { Text("Facebook URL") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = instagram,
-                    onValueChange = { instagram = it },
-                    label = { Text("Instagram URL") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(12.dp))
-                OutlinedTextField(
-                    value = github,
-                    onValueChange = { github = it },
-                    label = { Text("GitHub URL") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(12.dp))
-                Text("Theme colour", style = MaterialTheme.typography.bodyMedium, color = colors.text)
-                Spacer(Modifier.height(8.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    ThemeColorPresets.forEach { (label, hex) ->
-                        AssistChip(
-                            onClick = { themeColor = hex ?: "" },
-                            label = { Text(label) },
-                            leadingIcon = {
-                                if (hex != null) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(14.dp)
-                                            .clip(CircleShape)
-                                            .background(parseThemeColor(hex) ?: Color.Gray)
-                                    )
-                                }
-                            }
-                        )
-                    }
+                if (!profile?.education.isNullOrBlank()) {
+                    HorizontalDivider(color = colors.border)
+                    InfoRow(
+                        icon = Icons.Default.School,
+                        label = "Education",
+                        value = profile?.education ?: "—"
+                    )
                 }
+                (profile?.socialLinks?.nonBlank() ?: emptyList()).forEach { (network, url) ->
+                    HorizontalDivider(color = colors.border)
+                    InfoRow(
+                        icon = Icons.Default.Link,
+                        label = network,
+                        value = url
+                    )
+                }
+                HorizontalDivider(color = colors.border)
+                InfoRow(
+                    icon = Icons.Default.Visibility,
+                    label = "Profile visitors",
+                    value = if (viewCount > 0) "$viewCount" else "No visitors yet"
+                )
+            }
+            // Who recently viewed my profile (owner-only).
+            if (recentViewers.isNotEmpty()) {
                 Spacer(Modifier.height(12.dp))
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text("Public profile", style = MaterialTheme.typography.bodyMedium, color = colors.text)
-                        Text(
-                            "Anyone can see your full profile. Private profiles show full info only to friends.",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = colors.muted
-                        )
-                    }
-                    Switch(checked = isPublic, onCheckedChange = { isPublic = it })
-                }
-                Spacer(Modifier.height(16.dp))
-                Button(
-                    onClick = {
-                        viewModel.saveProfile(name, bio, phone, isPublic)
-                        viewModel.saveExtendedProfile(
-                            city,
-                            education,
-                            statusLine,
-                            SocialLinks(
-                                facebook = facebook.trim().ifBlank { null },
-                                instagram = instagram.trim().ifBlank { null },
-                                github = github.trim().ifBlank { null }
-                            ),
-                            themeColor
-                        )
-                        editing = false
-                    },
-                    enabled = !saving,
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    if (saving) CircularProgressIndicator(modifier = Modifier.size(18.dp), strokeWidth = 2.dp)
-                    else Text("Save profile")
-                }
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = { editing = false }, modifier = Modifier.fillMaxWidth()) {
-                    Text("Cancel")
-                }
-            } else {
-                // WhatsApp-style info list.
                 Column(
                     modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(colors.card)
                 ) {
-                    InfoRow(
-                        icon = Icons.Default.Info,
-                        label = "About",
-                        value = profile?.bio?.ifBlank { "—" } ?: "—"
+                    Text(
+                        "Recent visitors",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = colors.text,
+                        modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
                     )
-                    HorizontalDivider(color = colors.border)
-                    InfoRow(
-                        icon = Icons.Default.Phone,
-                        label = "Phone",
-                        value = profile?.phone?.ifBlank { "Add phone number" } ?: "Add phone number",
-                        onClick = { editing = true }
-                    )
-                    HorizontalDivider(color = colors.border)
-                    InfoRow(
-                        icon = Icons.Default.Person,
-                        label = "Username",
-                        value = "@${profile?.username ?: ""}",
-                        onClick = { clipboard.setText(AnnotatedString("@${profile?.username ?: ""}")) }
-                    )
-                    HorizontalDivider(color = colors.border)
-                    InfoRow(
-                        icon = Icons.Default.Email,
-                        label = "Email",
-                        value = user?.email ?: "—"
-                    )
-                    HorizontalDivider(color = colors.border)
-                    InfoRow(
-                        icon = Icons.Default.DateRange,
-                        label = "Member since",
-                        value = memberSince.ifBlank { "—" }
-                    )
-                    // v3.1.0: city, education, visitors.
-                    if (!profile?.city.isNullOrBlank()) {
-                        HorizontalDivider(color = colors.border)
-                        InfoRow(
-                            icon = Icons.Default.LocationOn,
-                            label = "City",
-                            value = profile?.city ?: "—"
-                        )
-                    }
-                    if (!profile?.education.isNullOrBlank()) {
-                        HorizontalDivider(color = colors.border)
-                        InfoRow(
-                            icon = Icons.Default.School,
-                            label = "Education",
-                            value = profile?.education ?: "—"
-                        )
-                    }
-                    // v3.1.0: social links (tap not needed here — shown on the public profile).
-                    (profile?.socialLinks?.nonBlank() ?: emptyList()).forEach { (network, url) ->
-                        HorizontalDivider(color = colors.border)
-                        InfoRow(
-                            icon = Icons.Default.Link,
-                            label = network,
-                            value = url
-                        )
-                    }
-                    HorizontalDivider(color = colors.border)
-                    InfoRow(
-                        icon = Icons.Default.Visibility,
-                        label = "Profile visitors",
-                        value = if (viewCount > 0) "$viewCount" else "No visitors yet"
-                    )
-                }
-                // v3.1.0: who recently viewed my profile (owner-only).
-                if (recentViewers.isNotEmpty()) {
-                    Spacer(Modifier.height(12.dp))
-                    Column(
-                        modifier = Modifier.fillMaxWidth().clip(RoundedCornerShape(16.dp)).background(colors.card)
-                    ) {
-                        Text(
-                            "Recent visitors",
-                            style = MaterialTheme.typography.titleMedium,
-                            color = colors.text,
-                            modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)
-                        )
-                        recentViewers.forEach { item ->
-                            Row(
-                                modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Avatar(profile = item.viewer, size = AvatarSize.SM)
-                                Spacer(Modifier.width(12.dp))
-                                Column(modifier = Modifier.weight(1f)) {
-                                    Text(
-                                        item.viewer?.fullName?.ifBlank { item.viewer?.username } ?: "PingChat user",
-                                        style = MaterialTheme.typography.bodyMedium,
-                                        color = colors.text,
-                                        maxLines = 1,
-                                        overflow = TextOverflow.Ellipsis
-                                    )
-                                    Text(
-                                        TimeFormat.fmtListTime(item.view.viewedAt),
-                                        style = MaterialTheme.typography.bodySmall,
-                                        color = colors.muted
-                                    )
-                                }
+                    recentViewers.forEach { item ->
+                        Row(
+                            modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Avatar(profile = item.viewer, size = AvatarSize.SM)
+                            Spacer(Modifier.width(12.dp))
+                            Column(modifier = Modifier.weight(1f)) {
+                                Text(
+                                    item.viewer?.fullName?.ifBlank { item.viewer?.username } ?: "PingChat user",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    color = colors.text,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Text(
+                                    com.mdhasibulislam.pingchat.data.TimeFormat.fmtListTime(item.view.viewedAt),
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = colors.muted
+                                )
                             }
                         }
                     }
                 }
-                Spacer(Modifier.height(12.dp))
-                OutlinedButton(
-                    onClick = { editing = true },
-                    modifier = Modifier.fillMaxWidth()
-                ) {
-                    Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
-                    Spacer(Modifier.width(8.dp))
-                    Text("Edit profile")
-                }
+            }
+            Spacer(Modifier.height(12.dp))
+            OutlinedButton(
+                onClick = onEditProfileClick,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Icon(Icons.Default.Edit, contentDescription = null, modifier = Modifier.size(18.dp))
+                Spacer(Modifier.width(8.dp))
+                Text("Edit Profile")
             }
             Spacer(Modifier.height(12.dp))
             Button(onClick = onSettingsClick, modifier = Modifier.fillMaxWidth()) {
@@ -596,7 +453,7 @@ private fun Stat(value: String, label: String) {
     }
 }
 
-/** One WhatsApp-style info row: icon, label, value; tap when onClick is set. */
+/** One info row: icon, label, value; chevron + tap when onClick is set. */
 @Composable
 private fun InfoRow(icon: ImageVector, label: String, value: String, onClick: (() -> Unit)? = null) {
     val colors = pingChatColors
@@ -618,6 +475,9 @@ private fun InfoRow(icon: ImageVector, label: String, value: String, onClick: ((
                 maxLines = 2,
                 overflow = TextOverflow.Ellipsis
             )
+        }
+        if (onClick != null) {
+            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = colors.muted, modifier = Modifier.size(20.dp))
         }
     }
 }
