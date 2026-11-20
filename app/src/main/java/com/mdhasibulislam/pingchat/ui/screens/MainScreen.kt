@@ -255,7 +255,7 @@ fun MainScreen(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .padding(horizontal = 16.dp, bottom = 14.dp)
+                    .padding(start = 16.dp, end = 16.dp, bottom = 14.dp)
             ) {
                 // v3.1.0 (worker D): while a voice message plays — even
                 // after leaving the chat — a compact player sits above
