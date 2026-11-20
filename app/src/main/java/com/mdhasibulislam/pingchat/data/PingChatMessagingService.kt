@@ -71,6 +71,12 @@ class PingChatMessagingService : FirebaseMessagingService() {
         if (conversationId != null &&
             Prefs(applicationContext).mutedConversationIds.contains(conversationId)
         ) return
+        // v3.2.0: per-type toggles (Notifications screen). Message OFF
+        // hides message pushes; call OFF hides the call push banner.
+        // Neither touches CallManager — the in-app ringing UI already
+        // got the call push above and is unaffected by both.
+        if (type == "message" && !Prefs(applicationContext).messageNotifications) return
+        if (type == "call" && !Prefs(applicationContext).callNotifications) return
         val title = data["title"] ?: message.notification?.title ?: return
         val body = data["body"] ?: message.notification?.body ?: ""
         val senderId = data["senderId"]
@@ -116,11 +122,18 @@ class PingChatMessagingService : FirebaseMessagingService() {
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
 
+        // v3.2.0: Notification Preview OFF hides message content — the
+        // notification shows only the sender name + "New message".
+        // Calls and friend requests are not message content, so they
+        // keep their normal text.
+        val displayBody =
+            if (type == "message" && !Prefs(applicationContext).notificationPreview) "New message" else body
+
         val builder = NotificationCompat.Builder(this, channelId)
             .setSmallIcon(R.mipmap.ic_launcher)
             .setContentTitle(title)
-            .setContentText(body)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(body))
+            .setContentText(displayBody)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(displayBody))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setAutoCancel(true)
             .setContentIntent(openPendingIntent)

@@ -82,6 +82,11 @@ data class PrivacySettings(
     @SerialName("bio_visibility") val bioVisibility: String = Visibility.EVERYBODY.db,
     @SerialName("auto_delete_default") val autoDeleteDefault: String = AutoDeleteTimer.OFF.db,
     @SerialName("inactive_delete_after") val inactiveDeleteAfter: String = InactiveDeleteAfter.MONTHS_12.db,
+    // v3.2.0 (migration-v320-privacy-toggles.sql): new columns, all
+    // defaulted so rows written before the migration still decode.
+    @SerialName("read_receipts") val readReceipts: Boolean = true,
+    @SerialName("typing_indicator") val typingIndicator: Boolean = true,
+    @SerialName("add_who") val addWho: String = Visibility.EVERYBODY.db,
     @SerialName("created_at") val createdAt: String = "",
     @SerialName("updated_at") val updatedAt: String = ""
 ) {
@@ -93,9 +98,11 @@ data class PrivacySettings(
     val bio: Visibility get() = Visibility.fromDb(bioVisibility)
     val autoDelete: AutoDeleteTimer get() = AutoDeleteTimer.fromDb(autoDeleteDefault)
     val inactiveAfter: InactiveDeleteAfter get() = InactiveDeleteAfter.fromDb(inactiveDeleteAfter)
+    /** Who may send me a friend request (v3.2.0 "Who Can Add You"). */
+    val add: Visibility get() = Visibility.fromDb(addWho)
 }
 
-/** Only the six "who can …" settings of another user — what the
+/** Only the "who can …" settings of another user — what the
  *  pingchat_get_privacy_visibility RPC returns. */
 data class PrivacyVisibility(
     val lastSeen: Visibility = Visibility.EVERYBODY,
@@ -103,7 +110,9 @@ data class PrivacyVisibility(
     val calls: Visibility = Visibility.EVERYBODY,
     val voice: Visibility = Visibility.EVERYBODY,
     val forwarded: Visibility = Visibility.EVERYBODY,
-    val bio: Visibility = Visibility.EVERYBODY
+    val bio: Visibility = Visibility.EVERYBODY,
+    /** v3.2.0: who may send THEM a friend request. */
+    val add: Visibility = Visibility.EVERYBODY
 )
 
 /** One row of pingchat_devices (see migration-v310-privacy.sql). */
@@ -218,6 +227,18 @@ class PrivacyRepository {
     suspend fun setInactiveDeleteAfter(value: InactiveDeleteAfter): PrivacySettings =
         updateMySettings { it.copy(inactiveDeleteAfter = value.db) }
 
+    /** v3.2.0: whether others see that I read their messages. */
+    suspend fun setReadReceipts(enabled: Boolean): PrivacySettings =
+        updateMySettings { it.copy(readReceipts = enabled) }
+
+    /** v3.2.0: whether others see "typing…" while I type. */
+    suspend fun setTypingIndicator(enabled: Boolean): PrivacySettings =
+        updateMySettings { it.copy(typingIndicator = enabled) }
+
+    /** v3.2.0: who may send me a friend request. */
+    suspend fun setAddWho(value: Visibility): PrivacySettings =
+        updateMySettings { it.copy(addWho = value.db) }
+
     // ---------- another user's visibility settings ----------
 
     /**
@@ -246,7 +267,8 @@ class PrivacyRepository {
                 calls = row.calls,
                 voice = row.voice,
                 forwarded = row.forwarded,
-                bio = row.bio
+                bio = row.bio,
+                add = row.add
             )
         } catch (e: Exception) {
             null
@@ -262,7 +284,8 @@ class PrivacyRepository {
             calls = Visibility.fromDb(str("calls_who")),
             voice = Visibility.fromDb(str("voice_who")),
             forwarded = Visibility.fromDb(str("forwarded_who")),
-            bio = Visibility.fromDb(str("bio_visibility"))
+            bio = Visibility.fromDb(str("bio_visibility")),
+            add = Visibility.fromDb(str("add_who"))
         )
     }
 
@@ -358,6 +381,20 @@ class PrivacyRepository {
 
     /** Alias of [canMessageUser] for ChatViewModel / worker E. */
     suspend fun canSendMessageTo(userId: String): Boolean = canMessageUser(userId)
+
+    /**
+     * May I send [userId] a friend request? (v3.2.0 "Who Can Add You".)
+     * The RECIPIENT's setting governs: Everybody allows anyone,
+     * Friends allows only people already friends with them (a
+     * stranger is not a friend, so Friends blocks new strangers),
+     * Nobody blocks everyone. Already-friends never need a request,
+     * so callers only use this for non-friends.
+     */
+    suspend fun canSendFriendRequestTo(userId: String): Boolean {
+        if (isBlockedEitherWay(userId)) return false
+        val visibility = loadVisibilityOf(userId) ?: return true
+        return visibility.add.allows(isFriendWith(userId))
+    }
 
     /** May I call [userId]? The CALLEE's Calls setting governs. */
     suspend fun canCallUser(userId: String): Boolean {

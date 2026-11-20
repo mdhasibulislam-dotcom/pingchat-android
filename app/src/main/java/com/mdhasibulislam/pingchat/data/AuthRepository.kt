@@ -1,6 +1,8 @@
 package com.mdhasibulislam.pingchat.data
 
 import io.github.jan.supabase.auth.auth
+import io.github.jan.supabase.auth.mfa.AuthenticatorAssuranceLevel
+import io.github.jan.supabase.auth.mfa.FactorType
 import io.github.jan.supabase.auth.providers.Google
 import io.github.jan.supabase.auth.providers.builtin.Email
 import io.github.jan.supabase.auth.providers.builtin.IDToken
@@ -125,6 +127,126 @@ class AuthRepository {
         }
     }
 
+    // ---------- Two-factor authentication (TOTP, v3.2.0) ----------
+    // supabase-kt 3.9.0 auth-kt DOES expose MFA (auth.mfa):
+    // enroll / createChallenge / verifyChallenge /
+    // createChallengeAndVerify / unenroll / retrieveFactorsForCurrentUser
+    // / getAuthenticatorAssuranceLevel / verifiedFactors / status.
+    // Verified against the 3.9.0 sources (MfaApi.kt, FactorType.kt).
+    // TOTP is the only factor type; no phone factor, no recovery codes.
+    // NOTE: TOTP must also be enabled in the Supabase dashboard
+    // (Auth > MFA) or enroll() throws — callers show friendlyError(e).
+
+    /** One enrolled TOTP factor, ready to show as a QR code + secret. */
+    data class MfaEnrollment(
+        val factorId: String,
+        /** Secret to type into the authenticator app by hand. */
+        val secret: String,
+        /** otpauth:// URI — render this as the QR code. */
+        val qrUri: String
+    )
+
+    /** One verified TOTP factor on this account. */
+    data class MfaFactorInfo(
+        val id: String,
+        val friendlyName: String?,
+        val factorType: String
+    )
+
+    /**
+     * Start TOTP enrollment. Returns the factor id + secret + otpauth
+     * URI; the caller shows the QR code, the user scans it, then
+     * [verifyTotpCode] confirms the setup. The unverified factor
+     * expires after a few minutes, so enroll and verify on one screen.
+     */
+    suspend fun enrollTotpFactor(friendlyName: String = "PingChat"): MfaEnrollment {
+        val factor = auth.mfa.enroll(
+            factorType = FactorType.TOTP,
+            friendlyName = friendlyName
+        )
+        return MfaEnrollment(
+            factorId = factor.id,
+            secret = factor.data.secret,
+            qrUri = factor.data.uri
+        )
+    }
+
+    /**
+     * Confirm a TOTP code for [factorId] (enrollment, or the login
+     * challenge). Creates a challenge, then verifies the code; on
+     * success the session is promoted to AAL2. Deliberately the
+     * explicit two-step call, not createChallengeAndVerify — the
+     * latter defaults its channel to SMS, which is a phone-factor
+     * concept and has no meaning for TOTP.
+     */
+    suspend fun verifyTotpCode(factorId: String, code: String) {
+        val challenge = auth.mfa.createChallenge(factorId = factorId)
+        auth.mfa.verifyChallenge(
+            factorId = factorId,
+            challengeId = challenge.id,
+            code = code.trim()
+        )
+    }
+
+    /** Verified TOTP factors on this account (empty when 2FA is off). */
+    suspend fun listVerifiedMfaFactors(): List<MfaFactorInfo> {
+        return try {
+            auth.mfa.retrieveFactorsForCurrentUser()
+                .filter { it.isVerified }
+                .map { MfaFactorInfo(it.id, it.friendlyName, it.factorType) }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /** True when this account has a verified TOTP factor (2FA is on). */
+    fun isMfaEnabled(): Boolean {
+        return try {
+            auth.mfa.status.enabled
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * True when the current session is only AAL1 but the account has a
+     * verified factor, i.e. a TOTP code is still needed before the
+     * session is fully trusted. The login screen uses this right after
+     * sign-in: when true it must prompt for the code (see
+     * [verifyLoginChallenge]) instead of entering the app.
+     */
+    fun needsMfaChallenge(): Boolean {
+        return try {
+            val (current, next) = auth.mfa.getAuthenticatorAssuranceLevel()
+            current == AuthenticatorAssuranceLevel.AAL1 &&
+                next == AuthenticatorAssuranceLevel.AAL2
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * Verify the login challenge: the 6-digit code from the user's
+     * authenticator app, for their first verified factor. On success
+     * the session is promoted to AAL2. Throws on a wrong code —
+     * callers show friendlyError(e).
+     */
+    suspend fun verifyLoginChallenge(code: String) {
+        val factor = listVerifiedMfaFactors().firstOrNull()
+            ?: throw IllegalStateException("No two-factor method is set up on this account.")
+        verifyTotpCode(factor.id, code)
+    }
+
+    /**
+     * Turn 2FA off: verify a current TOTP code first (unenrolling a
+     * verified factor requires an AAL2 session), then unenroll the
+     * factor. Throws on a wrong code — callers show friendlyError(e).
+     */
+    suspend fun disableTotpFactor(factorId: String, code: String) {
+        verifyTotpCode(factorId, code)
+        auth.mfa.unenroll(factorId = factorId)
+    }
+
     suspend fun signOut() {
         val uid = auth.currentUserOrNull()?.id
         try {
@@ -247,6 +369,15 @@ class AuthRepository {
             return when {
                 m.contains("Invalid login credentials", ignoreCase = true) ->
                     "Incorrect email or password."
+                m.contains("Invalid MFA", ignoreCase = true) ||
+                    m.contains("Invalid code", ignoreCase = true) ||
+                    m.contains("invalid totp", ignoreCase = true) ||
+                    m.contains("challenge", ignoreCase = true) && m.contains("expired", ignoreCase = true) ->
+                    "That code is incorrect or has expired. Check your authenticator app and try again."
+                m.contains("MFA", ignoreCase = true) && m.contains("not enabled", ignoreCase = true) ->
+                    "Two-factor authentication is not turned on for this app yet."
+                m.contains("AAL2", ignoreCase = true) ->
+                    "Enter your authenticator code first, then try again."
                 m.contains("Email not confirmed", ignoreCase = true) ->
                     "Please confirm your email first — check your inbox."
                 m.contains("already registered", ignoreCase = true) ||

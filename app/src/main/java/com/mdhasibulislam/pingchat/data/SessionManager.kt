@@ -50,6 +50,16 @@ object SessionManager {
     private val _isLoggedIn = MutableStateFlow<Boolean?>(null)
     val isLoggedIn: StateFlow<Boolean?> = _isLoggedIn.asStateFlow()
 
+    /**
+     * v3.2.0 Two-factor: true while the signed-in session is only AAL1
+     * and a TOTP code is still needed (see [AuthRepository.needsMfaChallenge]).
+     * Set BEFORE [_isLoggedIn] flips to true, so MainActivity routes to
+     * the "mfa_challenge" screen instead of "main" — an unverified user
+     * never reaches the chats. Cleared by [onMfaVerified] (or on sign-out).
+     */
+    private val _mfaChallengePending = MutableStateFlow(false)
+    val mfaChallengePending: StateFlow<Boolean> = _mfaChallengePending.asStateFlow()
+
     private val _profile = MutableStateFlow<Profile?>(null)
     val profile: StateFlow<Profile?> = _profile.asStateFlow()
 
@@ -135,8 +145,26 @@ object SessionManager {
                 Supabase.client.auth.sessionStatus.collect { status ->
                     when (status) {
                         is SessionStatus.Authenticated -> {
+                            // v3.2.0 Two-factor: check the MFA challenge
+                            // BEFORE flipping isLoggedIn, so MainActivity
+                            // routes an AAL1 session to the code prompt
+                            // instead of the chats. needsMfaChallenge is
+                            // a synchronous read of the session's AAL.
+                            val needsMfa = try {
+                                authRepo.needsMfaChallenge()
+                            } catch (e: Exception) {
+                                false
+                            }
+                            _mfaChallengePending.value = needsMfa
                             _isLoggedIn.value = true
-                            status.session.user?.let { onSignedIn(it) }
+                            if (!needsMfa) {
+                                status.session.user?.let { onSignedIn(it) }
+                            }
+                            // MFA pending: onSignedIn is deliberately NOT
+                            // run yet — no profile load, presence, feed or
+                            // calls until the code is verified (see
+                            // onMfaVerified). The session itself stays
+                            // valid, so verifying just continues it.
                         }
                         is SessionStatus.NotAuthenticated,
                         is SessionStatus.RefreshFailure -> {
@@ -191,7 +219,28 @@ object SessionManager {
         startFeed()
     }
 
+    /**
+     * v3.2.0 Two-factor: the user just verified their TOTP code at
+     * sign-in (MfaChallengeScreen). Clear the gate and run the normal
+     * sign-in setup (profile, presence, feed) that was held back while
+     * the challenge was pending. If the session already promoted to
+     * AAL2, the collector above may also fire — onSignedIn is
+     * idempotent (it early-returns when the user is already loaded).
+     */
+    fun onMfaVerified() {
+        _mfaChallengePending.value = false
+        scope.launch {
+            val user = try {
+                authRepo.currentUser()
+            } catch (e: Exception) {
+                null
+            } ?: return@launch
+            onSignedIn(user)
+        }
+    }
+
     private suspend fun onSignedOut() {
+        _mfaChallengePending.value = false
         val uid = _user.value?.uid
         if (uid != null) {
             setOnline(uid, false)

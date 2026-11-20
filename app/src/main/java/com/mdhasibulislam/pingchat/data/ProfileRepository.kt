@@ -270,4 +270,23 @@ class ProfileRepository {
             null
         }
     }
+
+    /**
+     * Remove the profile photo (v3.2.0): set avatar_url to NULL in
+     * Supabase and return the updated row, so the photo is really gone
+     * (the Avatar component falls back to initials). The old Storage
+     * file is left in place — it is no longer referenced anywhere.
+     */
+    suspend fun clearAvatarUrl(userId: String): Profile? {
+        return try {
+            client.from("pingchat_profiles").update(
+                { set("avatar_url", null as String?) }
+            ) {
+                filter { eq("id", userId) }
+                select()
+            }.decodeSingleOrNull<Profile>()
+        } catch (e: Exception) {
+            null
+        }
+    }
 }

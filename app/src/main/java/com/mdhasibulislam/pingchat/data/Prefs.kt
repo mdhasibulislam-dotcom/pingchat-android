@@ -30,6 +30,49 @@ class Prefs(context: Context) {
         set(value) { sp.edit().putBoolean("notifications_enabled", value).apply() }
 
     /**
+     * Accent colour (Appearance, v3.2.0). Stored name ("green", "blue",
+     * "purple", "orange", "red", "pink", "orange-red"), default green.
+     * See Theme.kt accentColorFor().
+     */
+    var accentColor: String
+        get() = sp.getString("accent_color", "green") ?: "green"
+        set(value) { sp.edit().putString("accent_color", value).apply() }
+
+    /**
+     * Font size scale (Appearance, v3.2.0). 1.0f = Normal, 1.15f = Large,
+     * 1.3f = Extra Large. Applied as the fontScale of LocalDensity.
+     */
+    var fontSize: Float
+        get() = sp.getFloat("font_size", 1.0f)
+        set(value) { sp.edit().putFloat("font_size", value).apply() }
+
+    /**
+     * Message push notifications (Notifications, v3.2.0). Default ON.
+     * OFF hides message pushes (PingChatMessagingService display gate);
+     * calls are unaffected.
+     */
+    var messageNotifications: Boolean
+        get() = sp.getBoolean("message_notifications", true)
+        set(value) { sp.edit().putBoolean("message_notifications", value).apply() }
+
+    /**
+     * Call push notifications (Notifications, v3.2.0). Default ON.
+     * OFF hides the call push banner only — the in-app ringing UI
+     * (CallManager) is unaffected.
+     */
+    var callNotifications: Boolean
+        get() = sp.getBoolean("call_notifications", true)
+        set(value) { sp.edit().putBoolean("call_notifications", value).apply() }
+
+    /**
+     * Show message content in notifications (Notifications, v3.2.0).
+     * Default ON. OFF shows only the sender name + "New message".
+     */
+    var notificationPreview: Boolean
+        get() = sp.getBoolean("notification_preview", true)
+        set(value) { sp.edit().putBoolean("notification_preview", value).apply() }
+
+    /**
      * Muted conversation ids, v3.1.0 (local mirror of the is_muted flag on
      * the caller's participant row). PingChatMessagingService reads this
      * — not the database — because the service runs outside any signed-in
@@ -44,5 +87,19 @@ class Prefs(context: Context) {
         val current = mutedConversationIds.toMutableSet()
         if (muted) current.add(conversationId) else current.remove(conversationId)
         mutedConversationIds = current
+    }
+
+    /**
+     * Per-chat theme (v3.2.0, worker F): background choice for one
+     * conversation, stored locally under its own key. "default" means
+     * the app's normal chat background; anything else is a key from
+     * ChatThemeOptions in ChatPeerProfileScreen.kt. Read by ChatScreen
+     * for its background; written from the peer profile's Chat Theme row.
+     */
+    fun chatTheme(conversationId: String): String =
+        sp.getString("chat_theme_$conversationId", "default") ?: "default"
+
+    fun setChatTheme(conversationId: String, theme: String) {
+        sp.edit().putString("chat_theme_$conversationId", theme).apply()
     }
 }
