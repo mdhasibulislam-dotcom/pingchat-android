@@ -8,6 +8,8 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.unit.Density
 
 /** Extra PingChat colours beyond Material3's scheme. */
 data class PingChatColors(
@@ -18,6 +20,7 @@ data class PingChatColors(
     val text2: Color,
     val muted: Color,
     val border: Color,
+    val primary: Color,
     val primarySoft: Color,
     val dangerSoft: Color,
     val inputBg: Color,
@@ -35,6 +38,7 @@ private val LightPingChatColors = PingChatColors(
     text2 = LightText2,
     muted = LightMuted,
     border = LightBorder,
+    primary = Emerald,
     primarySoft = EmeraldSoft,
     dangerSoft = LightDangerSoft,
     inputBg = LightInputBg,
@@ -52,6 +56,7 @@ private val DarkPingChatColors = PingChatColors(
     text2 = DarkText2,
     muted = DarkMuted,
     border = DarkBorder,
+    primary = Emerald,
     primarySoft = DarkPrimarySoft,
     dangerSoft = DarkDangerSoft,
     inputBg = DarkInputBg,
@@ -85,13 +90,44 @@ private val DarkScheme = darkColorScheme(
     error = DarkDanger
 )
 
+/**
+ * v3.2.0: [accent] becomes MaterialTheme's primary (light + dark
+ * schemes) and PingChatColors.primary, so buttons and accents follow
+ * the Appearance choice; [fontScale] scales all text via LocalDensity.
+ *
+ * Scope note: screens that reference Emerald / EmeraldBright directly
+ * stay green — only MaterialTheme primary and the new screens follow
+ * the accent. That is the accepted v3.2.0 scope.
+ */
 @Composable
-fun PingChatTheme(darkTheme: Boolean = isSystemInDarkTheme(), content: @Composable () -> Unit) {
-    val colors = if (darkTheme) DarkPingChatColors else LightPingChatColors
-    val scheme = if (darkTheme) DarkScheme else LightScheme
-    CompositionLocalProvider(LocalPingChatColors provides colors) {
+fun PingChatTheme(
+    darkTheme: Boolean = isSystemInDarkTheme(),
+    accent: Color = Emerald,
+    fontScale: Float = 1f,
+    content: @Composable () -> Unit
+) {
+    val baseColors = if (darkTheme) DarkPingChatColors else LightPingChatColors
+    val colors = baseColors.copy(primary = accent)
+    val scheme = if (darkTheme) DarkScheme.copy(primary = accent)
+    else LightScheme.copy(primary = accent)
+    val density = LocalDensity.current
+    CompositionLocalProvider(
+        LocalPingChatColors provides colors,
+        LocalDensity provides Density(density = density.density, fontScale = fontScale)
+    ) {
         MaterialTheme(colorScheme = scheme, typography = PingChatTypography, content = content)
     }
+}
+
+/** Map a stored accent name (Prefs.accentColor) to its Color. Unknown names fall back to green. */
+fun accentColorFor(name: String): Color = when (name) {
+    "blue" -> AccentBlue
+    "purple" -> AccentPurple
+    "orange" -> AccentOrange
+    "red" -> AccentRed
+    "pink" -> AccentPink
+    "orange-red" -> AccentOrangeRed
+    else -> AccentGreen
 }
 
 /** Shorthand to read PingChat colours inside a composable. */

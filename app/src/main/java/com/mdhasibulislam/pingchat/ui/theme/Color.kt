@@ -2,6 +2,16 @@ package com.mdhasibulislam.pingchat.ui.theme
 
 import androidx.compose.ui.graphics.Color
 
+// Accent colours (Appearance, v3.2.0) — the 7 selectable accents.
+// "green" (#10B981) is the app green and the default.
+val AccentGreen = Color(0xFF10B981)
+val AccentBlue = Color(0xFF3B82F6)
+val AccentPurple = Color(0xFF8B5CF6)
+val AccentOrange = Color(0xFFF97316)
+val AccentRed = Color(0xFFEF4444)
+val AccentPink = Color(0xFFEC4899)
+val AccentOrangeRed = Color(0xFFEA580C)
+
 // Exact tokens from the web app (css/app.css :root / [data-theme="dark"]).
 val Emerald = Color(0xFF059669)
 val EmeraldHover = Color(0xFF047857)
