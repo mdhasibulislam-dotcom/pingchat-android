@@ -1,5 +1,6 @@
 package com.mdhasibulislam.pingchat.data
 
+import android.util.Log
 import io.github.jan.supabase.annotations.SupabaseInternal
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
@@ -43,6 +44,8 @@ class CallRepository {
     fun myId(): String? = client.auth.currentUserOrNull()?.id
 
     companion object {
+        private const val TAG = "CallRepository"
+
         /** 30s ring, then the call is marked missed. */
         const val CALL_TIMEOUT_MS = 30_000L
 
@@ -145,7 +148,12 @@ class CallRepository {
                 filter { eq("id", callId) }
             }
         } catch (e: Exception) {
-            // call history is best-effort; the call itself still works
+            // v3.2.3: never swallow this silently again — a failed status
+            // update leaves the row "ringing", and the 10s sweep then
+            // re-logs the same missed call every cycle (19 rows from 3
+            // calls on 2026-11-21). The call itself still works, but the
+            // failure must be visible in logcat.
+            Log.w(TAG, "updateCall failed for $callId: ${e.message}")
         }
     }
 
@@ -194,6 +202,15 @@ class CallRepository {
         endedAt: String?,
         durationSeconds: Int?
     ) {
+        // v3.2.3: one call = ONE missed-history row per user. The 10s
+        // ringing sweep re-processes a still-"ringing" row whenever
+        // markMissed's update fails (see updateCall), so without this
+        // check the same unanswered call was logged again every 10s.
+        // Skip the insert when a missed row for this call already exists
+        // for this user — this covers every recording path at once
+        // (sweep, no-answer timer, busy auto-decline), since they all
+        // funnel through here.
+        if (status == "missed" && hasMissedHistoryRow(userId, callId)) return
         try {
             client.from("pingchat_call_history").insert(
                 buildJsonObject {
@@ -211,6 +228,28 @@ class CallRepository {
             )
         } catch (e: Exception) {
             // call history is best-effort
+        }
+    }
+
+    /**
+     * v3.2.3: true when this user already has a "missed" history row for
+     * [callId]. The guard for the insert above — the check reads only
+     * this user's own rows, which the history SELECT policy allows.
+     */
+    private suspend fun hasMissedHistoryRow(userId: String, callId: String): Boolean {
+        return try {
+            client.from("pingchat_call_history").select {
+                filter {
+                    eq("user_id", userId)
+                    eq("call_id", callId)
+                    eq("status", "missed")
+                }
+                limit(1)
+            }.decodeList<CallHistoryRow>().isNotEmpty()
+        } catch (e: Exception) {
+            // Check failed (e.g. offline): fall through to the insert, so
+            // a missed call is never lost because of the guard itself.
+            false
         }
     }
 
