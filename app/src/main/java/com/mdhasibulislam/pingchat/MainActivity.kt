@@ -448,7 +448,12 @@ class MainActivity : ComponentActivity() {
                                 onPrivacySecurityClick = { navController.navigate("privacy_security") },
                                 onPrivacyPolicyClick = { navController.navigate("privacy_policy") },
                                 // v3.2.0 (worker B): profile header opens Edit Profile.
-                                onEditProfileClick = { navController.navigate("edit_profile") }
+                                onEditProfileClick = { navController.navigate("edit_profile") },
+                                // v3.2.2 fix: Settings tab rows for Notifications /
+                                // Appearance — forwarded by MainScreen to the
+                                // SettingsScreen it renders (tab 3).
+                                onNotificationsClick = { navController.navigate("notifications") },
+                                onAppearanceClick = { navController.navigate("appearance") }
                             )
                         }
                         composable("settings") {
