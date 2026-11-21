@@ -643,7 +643,7 @@ fun RegisterScreen(
         Spacer(Modifier.height(20.dp))
         Row(
             modifier = Modifier.fillMaxWidth(),
-            horizontalAlignment = Alignment.CenterHorizontally,
+            horizontalArrangement = Arrangement.Center,
             verticalAlignment = Alignment.CenterVertically
         ) {
             Text("Already have an account?", style = MaterialTheme.typography.bodyMedium, color = colors.muted)

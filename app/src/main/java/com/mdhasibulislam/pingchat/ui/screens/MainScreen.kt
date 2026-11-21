@@ -313,6 +313,7 @@ fun MainScreen(
                         verticalAlignment = Alignment.CenterVertically
                     ) {
                         FloatingNavTab(
+                            modifier = Modifier.weight(1f),
                             label = "Chats",
                             selected = tab == 0 && !showProfile,
                             selectedIcon = Icons.Default.ChatBubble,
@@ -320,6 +321,7 @@ fun MainScreen(
                             onClick = { tab = 0; showProfile = false }
                         )
                         FloatingNavTab(
+                            modifier = Modifier.weight(1f),
                             label = "Calls",
                             selected = tab == 1 && !showProfile,
                             selectedIcon = Icons.Default.Phone,
@@ -327,6 +329,7 @@ fun MainScreen(
                             onClick = { tab = 1; showProfile = false }
                         )
                         FloatingNavTab(
+                            modifier = Modifier.weight(1f),
                             label = "People",
                             selected = tab == 2 && !showProfile,
                             selectedIcon = Icons.Default.People,
@@ -334,6 +337,7 @@ fun MainScreen(
                             onClick = { tab = 2; showProfile = false }
                         )
                         FloatingNavTab(
+                            modifier = Modifier.weight(1f),
                             label = "Settings",
                             selected = tab == 3 && !showProfile,
                             selectedIcon = Icons.Default.Settings,
@@ -377,6 +381,7 @@ fun MainScreen(
  *  + 2dp gap + 11sp label is 55dp, centred in the 60dp bar. */
 @Composable
 private fun FloatingNavTab(
+    modifier: Modifier = Modifier,
     label: String,
     selected: Boolean,
     selectedIcon: ImageVector,
@@ -385,8 +390,7 @@ private fun FloatingNavTab(
 ) {
     val colors = pingChatColors
     Column(
-        modifier = Modifier
-            .weight(1f)
+        modifier = modifier
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick),
         horizontalAlignment = Alignment.CenterHorizontally,
