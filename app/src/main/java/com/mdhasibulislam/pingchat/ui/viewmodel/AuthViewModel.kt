@@ -16,6 +16,8 @@ data class AuthUiState(
     val info: String? = null,
     /** Registration finished but email confirmation is required. */
     val needsConfirmation: Boolean = false,
+    /** Email the confirmation link was sent to (verification screen). */
+    val pendingVerificationEmail: String? = null,
     /** Username availability hint on the register screen. */
     val usernameHint: String? = null,
     val usernameOk: Boolean = false
@@ -39,9 +41,24 @@ class AuthViewModel : ViewModel() {
          */
         val pendingGoogleToken = MutableStateFlow<String?>(null)
         val pendingGoogleError = MutableStateFlow<String?>(null)
+
+        /**
+         * Hand-off from MainActivity's deep-link handling: an expired or
+         * invalid auth link (e.g. a stale password-reset link) arrives
+         * here so the login screen can show it. Same pattern as the
+         * Google hand-off above.
+         */
+        val pendingDeepLinkError = MutableStateFlow<String?>(null)
     }
 
-    fun clearMessage() = _state.update { it.copy(error = null, info = null, needsConfirmation = false) }
+    fun clearMessage() = _state.update {
+        it.copy(error = null, info = null, needsConfirmation = false, pendingVerificationEmail = null)
+    }
+
+    /** Show a deep-link error (e.g. expired reset link) on the auth screens. */
+    fun deepLinkError(message: String) {
+        _state.update { it.copy(error = message, info = null) }
+    }
 
     fun login(login: String, password: String) {
         val id = login.trim()
@@ -98,12 +115,31 @@ class AuthViewModel : ViewModel() {
         }
     }
 
-    fun register(name: String, username: String, email: String, password: String, password2: String) {
+    /**
+     * [dob] is the ISO yyyy-MM-dd date of birth from the register
+     * screen's date picker. Required, and must be a real past date.
+     */
+    fun register(
+        name: String,
+        username: String,
+        email: String,
+        password: String,
+        password2: String,
+        dob: String? = null
+    ) {
         val uname = username.trim().lowercase()
+        val dobDate = try {
+            dob?.let { java.time.LocalDate.parse(it) }
+        } catch (e: Exception) {
+            null
+        }
         when {
             name.trim().length < 2 -> return _state.update { it.copy(error = "Enter your full name.") }
             !usernameRe.matches(uname) -> return _state.update { it.copy(error = "Username must be 3–20 letters, numbers or underscores.") }
             !emailRe.matches(email.trim()) -> return _state.update { it.copy(error = "Enter a valid email address.") }
+            dob.isNullOrBlank() -> return _state.update { it.copy(error = "Enter your date of birth.") }
+            dobDate == null -> return _state.update { it.copy(error = "Enter a real date of birth.") }
+            !dobDate.isBefore(java.time.LocalDate.now()) -> return _state.update { it.copy(error = "Date of birth must be in the past.") }
             password.length < 8 -> return _state.update { it.copy(error = "Password must be at least 8 characters.") }
             password != password2 -> return _state.update { it.copy(error = "Passwords do not match.") }
         }
@@ -113,19 +149,21 @@ class AuthViewModel : ViewModel() {
                 // The username is checked before the account is created
                 // (the RPC works before sign-in), so a taken name never
                 // creates a stray account.
-                repo.signUp(name.trim(), uname, email.trim(), password)
+                repo.signUp(name.trim(), uname, email.trim(), password, dob)
             } catch (e: Exception) {
                 _state.update { it.copy(loading = false, error = AuthRepository.friendlyError(e)) }
                 return@launch
             }
             if (!signedIn) {
-                // "Confirm email" is OFF in this project, so this only
-                // happens if the setting is ever turned back on.
+                // "Confirm email" is ON (v3.2.2): the account exists but
+                // the user must confirm first. MainActivity switches to
+                // the verification screen on needsConfirmation.
                 _state.update {
                     it.copy(
                         loading = false,
                         needsConfirmation = true,
-                        info = "Account created — check your email for the confirmation link, then log in."
+                        pendingVerificationEmail = email.trim(),
+                        info = null
                     )
                 }
                 return@launch
@@ -134,6 +172,24 @@ class AuthViewModel : ViewModel() {
             // link step. SessionManager picks up the session and routes
             // to chats.
             _state.update { it.copy(loading = false) }
+        }
+    }
+
+    /**
+     * Resend the signup confirmation email (verification screen).
+     * Supabase enforces a 60-second cooldown — the screen disables its
+     * button for 60s; a server refusal lands in state.error.
+     */
+    fun resendVerificationEmail(email: String) {
+        viewModelScope.launch {
+            _state.update { it.copy(error = null, info = null) }
+            try {
+                repo.resendConfirmationEmail(email.trim())
+            } catch (e: Exception) {
+                _state.update { it.copy(error = AuthRepository.friendlyError(e)) }
+                return@launch
+            }
+            _state.update { it.copy(info = "Verification email sent.") }
         }
     }
 
