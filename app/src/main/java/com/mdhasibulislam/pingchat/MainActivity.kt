@@ -18,7 +18,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.material3.Text
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -27,9 +26,9 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
@@ -38,6 +37,7 @@ import com.google.android.gms.auth.api.signin.GoogleSignIn
 import com.google.android.gms.auth.api.signin.GoogleSignInClient
 import com.google.android.gms.auth.api.signin.GoogleSignInOptions
 import com.google.android.gms.common.api.ApiException
+import com.mdhasibulislam.pingchat.data.AuthRepository
 import com.mdhasibulislam.pingchat.data.CallManager
 import com.mdhasibulislam.pingchat.data.PingChatMessagingService
 import com.mdhasibulislam.pingchat.data.Prefs
@@ -54,17 +54,22 @@ import com.mdhasibulislam.pingchat.ui.screens.LoginScreen
 import com.mdhasibulislam.pingchat.ui.screens.MainScreen
 import com.mdhasibulislam.pingchat.ui.screens.MfaChallengeScreen
 import com.mdhasibulislam.pingchat.ui.screens.NotificationsScreen
+import com.mdhasibulislam.pingchat.ui.screens.PingChatWordmark
 import com.mdhasibulislam.pingchat.ui.screens.PrivacyPolicyScreen
 import com.mdhasibulislam.pingchat.ui.screens.PrivacySecurityScreen
 import com.mdhasibulislam.pingchat.ui.screens.RegisterScreen
+import com.mdhasibulislam.pingchat.ui.screens.SetNewPasswordScreen
 import com.mdhasibulislam.pingchat.ui.screens.SettingsScreen
 import com.mdhasibulislam.pingchat.ui.screens.TwoFactorScreen
+import com.mdhasibulislam.pingchat.ui.screens.VerifyEmailScreen
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.PingChatTheme
 import com.mdhasibulislam.pingchat.ui.theme.accentColorFor
 import com.mdhasibulislam.pingchat.ui.viewmodel.AuthViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.CallViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
+import java.net.URLDecoder
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -80,6 +85,55 @@ class MainActivity : ComponentActivity() {
     // pattern as openChatIdState.
     private val openFriendRequestsState = mutableStateOf(false)
 
+    // v3.2.2 deep link: set to "set_new_password" when a password-reset
+    // link was just imported, so the NavHost routes there once the
+    // session is known (and past the MFA gate, if one is pending).
+    private val deepLinkTargetState = mutableStateOf<String?>(null)
+
+    /**
+     * v3.2.2 deep-link fix (the black-page bug): Supabase auth emails
+     * redirect to com.mdhasibulislam.pingchat://login-callback, and
+     * GoTrue puts the tokens in the URI FRAGMENT
+     * (#access_token=...&refresh_token=...&type=recovery|signup).
+     * The session is imported via supabase-kt 3.9.0's importAuthToken
+     * (verified in the 3.9.0 sources); SessionManager's sessionStatus
+     * collector then flips isLoggedIn and routes as usual. A recovery
+     * link additionally targets the set-new-password screen; an
+     * expired/invalid link surfaces a friendly error on the login
+     * screen instead. Called from onCreate (cold start) and
+     * onNewIntent (warm).
+     */
+    private fun handleAuthDeepLink(intent: Intent) {
+        val uri = intent.data ?: return
+        if (uri.scheme != "com.mdhasibulislam.pingchat" || uri.host != "login-callback") return
+        // Tokens live in the fragment; fall back to the query string so
+        // a link that arrives the other way still works.
+        val rawParams = listOfNotNull(uri.fragment, uri.encodedQuery).joinToString("&")
+        val params = rawParams.split("&").mapNotNull { part ->
+            val i = part.indexOf('=')
+            if (i > 0) part.substring(0, i) to part.substring(i + 1) else null
+        }.toMap()
+        val accessToken = params["access_token"]?.let {
+            URLDecoder.decode(it, "UTF-8")
+        } ?: return
+        val refreshToken = params["refresh_token"]?.let {
+            URLDecoder.decode(it, "UTF-8")
+        } ?: ""
+        val type = params["type"]
+        lifecycleScope.launch {
+            try {
+                AuthRepository().importSessionFromDeepLink(accessToken, refreshToken)
+                if (type == "recovery") {
+                    deepLinkTargetState.value = "set_new_password"
+                }
+                // type=signup (or email): the imported session signs the
+                // user in and SessionManager routes to "main" as usual.
+            } catch (e: Exception) {
+                AuthViewModel.pendingDeepLinkError.value = AuthRepository.friendlyError(e)
+            }
+        }
+    }
+
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
@@ -87,6 +141,7 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra(PingChatMessagingService.EXTRA_FRIEND_REQUEST, false)) {
             openFriendRequestsState.value = true
         }
+        handleAuthDeepLink(intent)
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -99,6 +154,10 @@ class MainActivity : ComponentActivity() {
         if (intent.getBooleanExtra(PingChatMessagingService.EXTRA_FRIEND_REQUEST, false)) {
             openFriendRequestsState.value = true
         }
+
+        // v3.2.2: an auth email link (signup confirmation / password
+        // reset) that cold-started the app.
+        handleAuthDeepLink(intent)
 
         // Start the session BEFORE the first frame: GoTrue restores the
         // saved session asynchronously (isLoggedIn starts null and flips
@@ -208,6 +267,21 @@ class MainActivity : ComponentActivity() {
                     else -> { /* still loading the saved session */ }
                 }
             }
+            // v3.2.2 deep link: a password-reset link was imported — once
+            // the session is known (and past the MFA gate, if one is
+            // pending) route to the set-new-password screen instead of
+            // the chats. Gated on !mfaPending so a reset link never
+            // walks past the two-factor gate.
+            val deepLinkTarget by deepLinkTargetState
+            LaunchedEffect(deepLinkTarget, isLoggedIn, mfaPending) {
+                if (deepLinkTarget == "set_new_password" && isLoggedIn == true && !mfaPending &&
+                    navController.currentDestination != null &&
+                    navController.currentDestination?.route != "set_new_password"
+                ) {
+                    deepLinkTargetState.value = null
+                    navController.navigate("set_new_password")
+                }
+            }
             // Notification tap / Open chat action while the app is already
             // running (v2.0.8): onNewIntent sets openChatIdState, this
             // opens that chat. v3.2.0 Two-factor: gated on !mfaPending —
@@ -252,11 +326,9 @@ class MainActivity : ComponentActivity() {
                             contentAlignment = Alignment.Center
                         ) {
                             Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                                Text(
-                                    "PingChat",
-                                    style = MaterialTheme.typography.headlineMedium,
-                                    fontWeight = FontWeight.Bold,
-                                    color = Emerald
+                                PingChatWordmark(
+                                    baseSize = MaterialTheme.typography.headlineMedium.fontSize,
+                                    baseColor = Emerald
                                 )
                                 Spacer(Modifier.height(16.dp))
                                 CircularProgressIndicator(color = Emerald)
@@ -267,6 +339,13 @@ class MainActivity : ComponentActivity() {
                         composable("auth") {
                             val authViewModel: AuthViewModel = viewModel()
                             var authScreen by remember { mutableStateOf("login") }
+                            val authState by authViewModel.state.collectAsState()
+                            // v3.2.2: registration finished but email
+                            // confirmation is required — show the
+                            // verification screen with that email.
+                            LaunchedEffect(authState.needsConfirmation) {
+                                if (authState.needsConfirmation) authScreen = "verify"
+                            }
                             val googleClick = {
                                 if (googleSignInClient == null) {
                                     authViewModel.googleError(
@@ -297,15 +376,33 @@ class MainActivity : ComponentActivity() {
                                     }
                                 }
                             }
+                            // v3.2.2: an expired/invalid auth deep link
+                            // (e.g. a stale reset link) shows its friendly
+                            // error on the login screen.
+                            LaunchedEffect(Unit) {
+                                AuthViewModel.pendingDeepLinkError.collect { message ->
+                                    if (message != null) {
+                                        AuthViewModel.pendingDeepLinkError.value = null
+                                        authViewModel.deepLinkError(message)
+                                    }
+                                }
+                            }
                             when (authScreen) {
                                 "register" -> RegisterScreen(
                                     viewModel = authViewModel,
-                                    onGoogleClick = googleClick,
                                     onLoginClick = { authScreen = "login" }
                                 )
                                 "forgot" -> ForgotPasswordScreen(
                                     viewModel = authViewModel,
                                     onBackToLogin = { authScreen = "login" }
+                                )
+                                "verify" -> VerifyEmailScreen(
+                                    viewModel = authViewModel,
+                                    email = authState.pendingVerificationEmail ?: "",
+                                    onBackToLogin = {
+                                        authViewModel.clearMessage()
+                                        authScreen = "login"
+                                    }
                                 )
                                 else -> LoginScreen(
                                     viewModel = authViewModel,
@@ -322,6 +419,18 @@ class MainActivity : ComponentActivity() {
                         // "main"; cancelling signs out (routes to "auth").
                         composable("mfa_challenge") {
                             MfaChallengeScreen()
+                        }
+                        // v3.2.2: password-reset deep link landing — the
+                        // session is already imported, so saving the new
+                        // password signs the user in; onDone routes to
+                        // "main". Back from here returns to the chats
+                        // (the user is signed in by then).
+                        composable("set_new_password") {
+                            SetNewPasswordScreen(onDone = {
+                                navController.navigate("main") {
+                                    popUpTo("set_new_password") { inclusive = true }
+                                }
+                            })
                         }
                         composable("main") {
                             MainScreen(
