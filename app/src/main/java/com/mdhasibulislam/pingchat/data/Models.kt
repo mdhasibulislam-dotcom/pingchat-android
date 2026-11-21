@@ -27,7 +27,9 @@ data class Profile(
     @SerialName("status_line") val statusLine: String? = null,
     @SerialName("social_links") val socialLinks: SocialLinks? = null,
     @SerialName("theme_color") val themeColor: String? = null,
-    @SerialName("is_verified") val isVerified: Boolean = false
+    @SerialName("is_verified") val isVerified: Boolean = false,
+    /** v3.2.2 (migration-v322-dob.sql): date of birth, ISO yyyy-MM-dd. */
+    @SerialName("date_of_birth") val dateOfBirth: String? = null
 )
 
 /**
@@ -133,6 +135,14 @@ data class ChatMessage(
     @SerialName("is_pinned") val isPinned: Boolean = false,
     @SerialName("pinned_at") val pinnedAt: String? = null,
     @SerialName("pinned_by") val pinnedBy: String? = null,
+    /** v3.2.2 (migration-v322-stories.sql): set when this message is a
+     *  REPLY to a story — the id of the story replied to, plus a
+     *  snapshot of its media URL so the chat bubble can show the story
+     *  attached/quoted above the reply text. Null for normal messages.
+     *  story_id is ON DELETE SET NULL: the reply stays in the inbox
+     *  even after the 12-hour story itself is deleted. */
+    @SerialName("story_id") val storyId: String? = null,
+    @SerialName("story_media_url") val storyMediaUrl: String? = null,
     /** Reactions live in pingchat_message_reactions, not on the message row. */
     val reactions: Map<String, String> = emptyMap()
 )

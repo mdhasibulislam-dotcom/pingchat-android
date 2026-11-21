@@ -1,6 +1,10 @@
 package com.mdhasibulislam.pingchat.data
 
 import android.content.Context
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.setValue
 
 /** Small app preferences, kept in SharedPreferences (theme, ringtone, push prompt). */
 class Prefs(context: Context) {
@@ -10,6 +14,13 @@ class Prefs(context: Context) {
         get() = sp.getBoolean("theme_dark", false)
         set(value) { sp.edit().putBoolean("theme_dark", value).apply() }
 
+    /**
+     * Incoming-call ringtone ON/OFF (Notifications, "Call ringtone").
+     * Default ON. Read by CallManager only: it gates the incoming-call
+     * ringtone and NOTHING else — no message sounds, no vibration
+     * (no vibration code exists in the app). Do not label it as
+     * "Sound & Vibration" anywhere.
+     */
     var ringtoneEnabled: Boolean
         get() = sp.getBoolean("ringtone", true)
         set(value) { sp.edit().putBoolean("ringtone", value).apply() }
@@ -33,18 +44,34 @@ class Prefs(context: Context) {
      * Accent colour (Appearance, v3.2.0). Stored name ("green", "blue",
      * "purple", "orange", "red", "pink", "orange-red"), default green.
      * See Theme.kt accentColorFor().
+     *
+     * v3.2.2: backed by Compose MutableState, initialised from
+     * SharedPreferences and updated on set — MainActivity reads this
+     * inside its PingChatTheme call, so changing the accent in
+     * AppearanceScreen recomposes the app theme with NO restart.
      */
+    private var accentState by mutableStateOf(sp.getString("accent_color", "green") ?: "green")
     var accentColor: String
-        get() = sp.getString("accent_color", "green") ?: "green"
-        set(value) { sp.edit().putString("accent_color", value).apply() }
+        get() = accentState
+        set(value) {
+            accentState = value
+            sp.edit().putString("accent_color", value).apply()
+        }
 
     /**
      * Font size scale (Appearance, v3.2.0). 1.0f = Normal, 1.15f = Large,
      * 1.3f = Extra Large. Applied as the fontScale of LocalDensity.
+     *
+     * v3.2.2: backed by Compose MutableState like accentColor above, so
+     * a font-size change also applies live with NO restart.
      */
+    private var fontSizeState by mutableFloatStateOf(sp.getFloat("font_size", 1.0f))
     var fontSize: Float
-        get() = sp.getFloat("font_size", 1.0f)
-        set(value) { sp.edit().putFloat("font_size", value).apply() }
+        get() = fontSizeState
+        set(value) {
+            fontSizeState = value
+            sp.edit().putFloat("font_size", value).apply()
+        }
 
     /**
      * Message push notifications (Notifications, v3.2.0). Default ON.

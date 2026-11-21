@@ -1,5 +1,6 @@
 package com.mdhasibulislam.pingchat.data
 
+import io.github.jan.supabase.auth.OtpType
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.auth.mfa.AuthenticatorAssuranceLevel
 import io.github.jan.supabase.auth.mfa.FactorType
@@ -73,24 +74,68 @@ class AuthRepository {
 
     /**
      * Creates the account and its pingchat_profiles row. "Confirm email" is
-     * OFF in this project, so sign-up signs the user in immediately and this
-     * returns true. Returns false only when a confirmation email was sent
-     * and the user must confirm first (if the setting is ever turned on).
+     * ON in this project (v3.2.2), so sign-up sends a confirmation email
+     * and this returns false until the user confirms — the caller shows
+     * the verification screen. Returns true only when the user is signed
+     * in immediately (confirmation off, or an already-confirmed address).
+     *
+     * [dob] is the ISO yyyy-MM-dd date of birth; it is stored in the
+     * sign-up user metadata as "date_of_birth" and copied into the
+     * pingchat_profiles row by [ensureProfile].
+     *
+     * The auth emails redirect to [AUTH_REDIRECT_URL], the app's deep
+     * link (see AndroidManifest), so tapping the link opens the app
+     * instead of a browser page.
      */
-    suspend fun signUp(name: String, username: String, email: String, password: String): Boolean {
+    suspend fun signUp(
+        name: String,
+        username: String,
+        email: String,
+        password: String,
+        dob: String? = null
+    ): Boolean {
         val uname = username.trim().lowercase()
         if (!isUsernameAvailable(uname)) {
             throw IllegalStateException("That username is already taken.")
         }
-        auth.signUpWith(Email) {
+        auth.signUpWith(Email, redirectUrl = AUTH_REDIRECT_URL) {
             this.email = email.trim()
             this.password = password
             data = buildJsonObject {
                 put("full_name", name.trim())
                 put("username", uname)
+                if (!dob.isNullOrBlank()) put("date_of_birth", dob)
             }
         }
         return auth.currentSessionOrNull() != null
+    }
+
+    /**
+     * Resend the signup confirmation email (v3.2.2 verification screen).
+     * Supabase enforces a 60-second cooldown between sends — the caller
+     * disables its resend button for 60s and shows the cooldown error
+     * (see [friendlyError]) if the server still refuses.
+     */
+    suspend fun resendConfirmationEmail(email: String) {
+        auth.resendEmail(
+            type = OtpType.Email.SIGNUP,
+            email = email.trim(),
+            redirectUrl = AUTH_REDIRECT_URL
+        )
+    }
+
+    /**
+     * Import the session from an auth deep link (v3.2.2 deep-link fix).
+     * Supabase puts the tokens in the URI fragment
+     * (#access_token=...&refresh_token=...&type=recovery|signup), so the
+     * caller parses them out of the intent data first. Verified against
+     * supabase-kt 3.9.0: importAuthToken(accessToken, refreshToken,
+     * retrieveUser) imports the session and (with a refresh token)
+     * enables auto-refresh. SessionManager's sessionStatus collector
+     * then flips isLoggedIn and routes to the app as usual.
+     */
+    suspend fun importSessionFromDeepLink(accessToken: String, refreshToken: String) {
+        auth.importAuthToken(accessToken, refreshToken, retrieveUser = true)
     }
 
     /** Google sign-in via ID token (native). Needs the Google provider enabled in Supabase. */
@@ -102,7 +147,9 @@ class AuthRepository {
     }
 
     suspend fun resetPassword(email: String) {
-        auth.resetPasswordForEmail(email)
+        // Explicit redirect so the reset link opens the app's deep link
+        // (MainActivity handles it) instead of a browser page.
+        auth.resetPasswordForEmail(email, redirectUrl = AUTH_REDIRECT_URL)
     }
 
     suspend fun updatePassword(newPassword: String) {
@@ -322,6 +369,9 @@ class AuthRepository {
             ?: user.email?.substringBefore("@")
             ?: ""
         val username = usernameForNewUser(user, meta)
+        // v3.2.2: date of birth from the sign-up metadata (ISO yyyy-MM-dd).
+        val dateOfBirth = meta["date_of_birth"]?.jsonPrimitive?.contentOrNull
+            ?.takeIf { it.isNotBlank() }
         val inserted = try {
             client.from("pingchat_profiles").insert(
                 buildJsonObject {
@@ -329,6 +379,7 @@ class AuthRepository {
                     put("username", username)
                     put("full_name", fullName)
                     if (avatar.isNotBlank()) put("avatar_url", avatar)
+                    if (dateOfBirth != null) put("date_of_birth", dateOfBirth)
                 }
             ) { select() }.decodeSingleOrNull<Profile>()
         } catch (e: Exception) {
@@ -363,12 +414,25 @@ class AuthRepository {
     }
 
     companion object {
+        /**
+         * v3.2.2 deep link: where Supabase auth emails (signup
+         * confirmation, password reset, resend) send the user back.
+         * Must match the intent-filter in AndroidManifest.xml and the
+         * Site URL / Redirect URLs in the Supabase dashboard.
+         */
+        const val AUTH_REDIRECT_URL = "com.mdhasibulislam.pingchat://login-callback"
+
         /** Short, friendly error messages for the auth screens. */
         fun friendlyError(e: Throwable): String {
             val m = e.message ?: "Something went wrong. Please try again."
             return when {
                 m.contains("Invalid login credentials", ignoreCase = true) ->
                     "Incorrect email or password."
+                m.contains("Email link is invalid", ignoreCase = true) ||
+                    m.contains("link is invalid or has expired", ignoreCase = true) ||
+                    m.contains("otp expired", ignoreCase = true) ||
+                    m.contains("expired", ignoreCase = true) && m.contains("email", ignoreCase = true) ->
+                    "This link has expired. Request a new one and try again."
                 m.contains("Invalid MFA", ignoreCase = true) ||
                     m.contains("Invalid code", ignoreCase = true) ||
                     m.contains("invalid totp", ignoreCase = true) ||

@@ -362,11 +362,18 @@ class ChatRepository {
         }
     }
 
-    /** Send a text message. Returns the inserted row (or null if it failed). */
+    /**
+     * Send a text message. Returns the inserted row (or null if it failed).
+     * v3.2.2: [storyId]/[storyMediaUrl] attach a story to the message —
+     * used ONLY for story replies (StoryRepository.sendStoryReply).
+     * Normal messages pass nothing and behave exactly as before.
+     */
     suspend fun sendMessage(
         conversationId: String,
         body: String,
-        replyToId: String? = null
+        replyToId: String? = null,
+        storyId: String? = null,
+        storyMediaUrl: String? = null
     ): ChatMessage? {
         val me = myId() ?: return null
         return try {
@@ -377,6 +384,8 @@ class ChatRepository {
                     put("body", body)
                     put("kind", "text")
                     if (replyToId != null) put("reply_to_id", replyToId)
+                    if (storyId != null) put("story_id", storyId)
+                    if (storyMediaUrl != null) put("story_media_url", storyMediaUrl)
                 }
             ) { select() }.decodeSingleOrNull<ChatMessage>()
             if (sent != null) {

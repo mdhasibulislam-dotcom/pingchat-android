@@ -3,6 +3,7 @@ package com.mdhasibulislam.pingchat.data
 import android.content.Context
 import io.github.jan.supabase.auth.auth
 import io.github.jan.supabase.postgrest.from
+import io.github.jan.supabase.postgrest.postgrest
 import io.github.jan.supabase.postgrest.query.Order
 import io.github.jan.supabase.realtime.PostgresAction
 import io.github.jan.supabase.realtime.channel
@@ -47,6 +48,15 @@ import kotlinx.serialization.json.put
  * only — a story has no server-side view tracking — kept in
  * SharedPreferences ("pingchat", key "seen_story_ids") and pruned to the
  * stories that still exist whenever the list loads.
+ *
+ * v3.2.2 — WHO viewed is now ALSO server-side (pingchat_story_views,
+ * pingchat_story_reactions, see database/migration-v322-stories.sql):
+ * recordView() upserts a view row so the owner can see names + times
+ * in the Viewers sheet; toggleReaction() stores one reaction per user
+ * per story (and also counts as a view); sendStoryReply() delivers a
+ * reply as a normal chat message (pingchat_messages with story_id set)
+ * into the 1-to-1 conversation with the story owner. The local
+ * seen-state above is UNCHANGED — it still drives the ring only.
  */
 @Serializable
 data class Story(
@@ -105,6 +115,216 @@ class StoryRepository(private val context: Context? = null) {
         val pruned = seenIds().intersect(keeping)
         if (pruned.size != seenIds().size) {
             prefs.edit().putStringSet(SEEN_PREFS_KEY, pruned).apply()
+        }
+    }
+
+    // ---------- v3.2.2: server-side views / reactions / replies ----------
+
+    /**
+     * Record that I viewed this story, server-side. Upsert on
+     * (story_id, viewer_id): re-viewing only refreshes viewed_at, it
+     * never duplicates the row. Best-effort — a failure (e.g. the
+     * v3.2.2 migration not run yet) must never break viewing.
+     * The owner reads these rows in the Viewers sheet; the local
+     * seen-state (markSeen) is untouched and still drives the ring.
+     */
+    suspend fun recordView(storyId: String): Boolean {
+        val me = myId() ?: return false
+        return try {
+            // viewed_at is in the payload on purpose: PostgREST upsert
+            // only updates the columns sent, so without it a re-view
+            // would never refresh the timestamp.
+            client.from("pingchat_story_views").upsert(
+                buildJsonObject {
+                    put("story_id", storyId)
+                    put("viewer_id", me)
+                    put("viewed_at", Instant.now().toString())
+                }
+            ) { onConflict = "story_id,viewer_id" }
+            true
+        } catch (e: Exception) {
+            false
+        }
+    }
+
+    /**
+     * How many people viewed a story — via the SECURITY DEFINER
+     * pingchat_story_view_count() RPC, so a non-owner sees the COUNT
+     * (the "128 views" label on someone else's story) without seeing
+     * WHO viewed. Falls back to 0 when the migration is not run yet.
+     */
+    suspend fun loadViewCount(storyId: String): Int {
+        return try {
+            client.postgrest.rpc(
+                "pingchat_story_view_count",
+                buildJsonObject { put("p_story_id", storyId) }
+            ).decodeAs<Long>().toInt()
+        } catch (e: Exception) {
+            // Migration not run yet, or the RPC is unavailable: the
+            // owner path below can still count rows it can read.
+            try {
+                client.from("pingchat_story_views").select {
+                    filter { eq("story_id", storyId) }
+                }.decodeList<StoryViewRow>().size
+            } catch (e2: Exception) {
+                0
+            }
+        }
+    }
+
+    /** My reaction on this story, if I left one (null otherwise). */
+    suspend fun myReaction(storyId: String): String? {
+        val me = myId() ?: return null
+        return try {
+            client.from("pingchat_story_reactions").select {
+                filter {
+                    eq("story_id", storyId)
+                    eq("user_id", me)
+                }
+            }.decodeSingleOrNull<StoryReactionRow>()?.emoji
+        } catch (e: Exception) {
+            null
+        }
+    }
+
+    /**
+     * Toggle my reaction on a story: same emoji again removes it,
+     * a different emoji replaces it (PRIMARY KEY (story_id, user_id)
+     * = one reaction per user per story). Reacting also counts as a
+     * view. Returns my reaction afterwards (null = removed).
+     */
+    suspend fun toggleReaction(storyId: String, emoji: String): String? {
+        val me = myId() ?: return null
+        // A reaction is a view too — the owner sees the reactor in
+        // the viewers list even if they never opened the viewer long
+        // enough for recordView() to fire.
+        recordView(storyId)
+        return try {
+            val mine = myReaction(storyId)
+            if (mine == emoji) {
+                client.from("pingchat_story_reactions").delete {
+                    filter {
+                        eq("story_id", storyId)
+                        eq("user_id", me)
+                    }
+                }
+                null
+            } else {
+                client.from("pingchat_story_reactions").upsert(
+                    buildJsonObject {
+                        put("story_id", storyId)
+                        put("user_id", me)
+                        put("emoji", emoji)
+                    }
+                ) { onConflict = "story_id,user_id" }
+                emoji
+            }
+        } catch (e: Exception) {
+            myReaction(storyId)
+        }
+    }
+
+    /**
+     * Everyone who viewed this story (owner only — RLS), newest view
+     * first, each with their profile and their reaction on this story
+     * (if any). Empty when the migration is not run yet, or when the
+     * caller is not the owner.
+     */
+    suspend fun loadViewers(storyId: String): List<StoryViewerItem> {
+        return try {
+            val views = client.from("pingchat_story_views").select {
+                filter { eq("story_id", storyId) }
+                order("viewed_at", Order.DESCENDING)
+            }.decodeList<StoryViewRow>()
+            if (views.isEmpty()) return emptyList()
+            val viewerIds = views.map { it.viewerId }.distinct()
+            val reactions = try {
+                client.from("pingchat_story_reactions").select {
+                    filter { eq("story_id", storyId) }
+                }.decodeList<StoryReactionRow>().associate { it.userId to it.emoji }
+            } catch (e: Exception) {
+                emptyMap()
+            }
+            val profiles = try {
+                client.from("pingchat_profiles").select {
+                    filter { isIn("id", viewerIds) }
+                }.decodeList<Profile>().associateBy { it.id }
+            } catch (e: Exception) {
+                emptyMap()
+            }
+            views.map { view ->
+                StoryViewerItem(
+                    view = view,
+                    viewer = profiles[view.viewerId],
+                    reactionEmoji = reactions[view.viewerId]
+                )
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /**
+     * Replies to this story, newest first: the pingchat_messages rows
+     * with story_id set (the same rows that landed in the owner's
+     * inbox). The owner reads them because they are a participant of
+     * each 1-to-1 conversation the reply was sent into.
+     */
+    suspend fun loadStoryReplies(storyId: String): List<StoryReplyItem> {
+        return try {
+            val messages = client.from("pingchat_messages").select {
+                filter { eq("story_id", storyId) }
+                order("created_at", Order.DESCENDING)
+            }.decodeList<ChatMessage>()
+            if (messages.isEmpty()) return emptyList()
+            val senderIds = messages.map { it.senderId }.distinct()
+            val profiles = try {
+                client.from("pingchat_profiles").select {
+                    filter { isIn("id", senderIds) }
+                }.decodeList<Profile>().associateBy { it.id }
+            } catch (e: Exception) {
+                emptyMap()
+            }
+            messages.map { message ->
+                StoryReplyItem(message = message, sender = profiles[message.senderId])
+            }
+        } catch (e: Exception) {
+            emptyList()
+        }
+    }
+
+    /** Viewers + replies together, for the Viewers bottom-sheet. */
+    suspend fun loadViewersData(story: Story): StoryViewersData {
+        return StoryViewersData(
+            story = story,
+            viewers = loadViewers(story.id),
+            replies = loadStoryReplies(story.id)
+        )
+    }
+
+    /**
+     * Send a reply to a story: a normal text message into the 1-to-1
+     * conversation with the story owner (created if none exists — the
+     * existing getOrCreateConversation path), with story_id +
+     * story_media_url set so the owner's chat shows the story
+     * attached/quoted above the reply text. Returns the sent message,
+     * or null when it failed (e.g. replying to my own story is a
+     * no-op — the viewer hides the reply field for my own stories).
+     */
+    suspend fun sendStoryReply(story: Story, text: String): ChatMessage? {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return null
+        if (story.userId == myId()) return null
+        return try {
+            val conversationId = ChatRepository().getOrCreateConversation(story.userId)
+            ChatRepository().sendMessage(
+                conversationId = conversationId,
+                body = trimmed,
+                storyId = story.id,
+                storyMediaUrl = story.mediaUrl
+            )
+        } catch (e: Exception) {
+            null
         }
     }
 
