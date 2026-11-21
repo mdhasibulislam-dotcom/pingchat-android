@@ -1,7 +1,9 @@
 package com.mdhasibulislam.pingchat.ui.screens
 
 import android.app.Application
+import android.content.Intent
 import android.net.Uri
+import android.widget.Toast
 import android.widget.VideoView
 import androidx.activity.result.PickVisualMediaRequest
 import androidx.activity.result.contract.ActivityResultContracts
@@ -11,6 +13,7 @@ import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -19,15 +22,25 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.KeyboardActions
+import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Add
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.ChevronRight
+import androidx.compose.material.icons.filled.MoreVert
+import androidx.compose.material.icons.filled.People
+import androidx.compose.material.icons.filled.Share
+import androidx.compose.material.icons.filled.Visibility
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -35,6 +48,8 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextField
+import androidx.compose.material3.TextFieldDefaults
 import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
@@ -52,6 +67,7 @@ import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -64,11 +80,15 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
 import coil.compose.AsyncImage
+import com.mdhasibulislam.pingchat.data.ChatMessage
+import com.mdhasibulislam.pingchat.data.STORY_REACTION_EMOJIS
 import com.mdhasibulislam.pingchat.data.SessionManager
 import com.mdhasibulislam.pingchat.data.Story
 import com.mdhasibulislam.pingchat.data.StoryGroup
 import com.mdhasibulislam.pingchat.data.StoryRepository
+import com.mdhasibulislam.pingchat.data.StoryViewersData
 import com.mdhasibulislam.pingchat.data.TimeFormat
+import com.mdhasibulislam.pingchat.data.formatCompactCount
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
@@ -163,6 +183,79 @@ class StoryViewModel(application: Application) : AndroidViewModel(application) {
         _groups.value = _groups.value.map { group ->
             group.copy(allSeen = group.stories.all { seen.contains(it.id) })
         }
+    }
+
+    // ---------- v3.2.2: views / reactions / replies / viewers sheet ----------
+
+    /** Server-side view count of the story currently on screen. */
+    private val _viewCount = MutableStateFlow(0)
+    val viewCount: StateFlow<Int> = _viewCount.asStateFlow()
+
+    /** My reaction on the story currently on screen (null = none). */
+    private val _myReaction = MutableStateFlow<String?>(null)
+    val myReaction: StateFlow<String?> = _myReaction.asStateFlow()
+
+    /** Viewers-sheet data for the story whose sheet is open (null = closed). */
+    private val _viewersData = MutableStateFlow<StoryViewersData?>(null)
+    val viewersData: StateFlow<StoryViewersData?> = _viewersData.asStateFlow()
+
+    private val _viewersLoading = MutableStateFlow(false)
+    val viewersLoading: StateFlow<Boolean> = _viewersLoading.asStateFlow()
+
+    private val _replySending = MutableStateFlow(false)
+    val replySending: StateFlow<Boolean> = _replySending.asStateFlow()
+
+    /**
+     * Called when a story comes on screen: local seen-ring + server-side
+     * view (everyone except the owner — the owner is not a viewer of
+     * their own story) + fresh view count + my reaction on it.
+     */
+    fun storyShown(story: Story, isMine: Boolean) {
+        markSeen(story)
+        viewModelScope.launch {
+            if (!isMine) repo.recordView(story.id)
+            _viewCount.value = repo.loadViewCount(story.id)
+            _myReaction.value = repo.myReaction(story.id)
+        }
+    }
+
+    /** Tap a reaction emoji: same again removes it, another replaces it. */
+    fun toggleReaction(story: Story, emoji: String) {
+        viewModelScope.launch {
+            _myReaction.value = repo.toggleReaction(story.id, emoji)
+            _viewCount.value = repo.loadViewCount(story.id)
+        }
+    }
+
+    /** Send a reply to a story (lands in the owner's inbox as a chat
+     *  message with the story attached). [onDone] reports success so
+     *  the viewer can clear the field or show a toast. */
+    fun sendReply(story: Story, text: String, onDone: (Boolean) -> Unit) {
+        viewModelScope.launch {
+            _replySending.value = true
+            try {
+                val sent = repo.sendStoryReply(story, text)
+                onDone(sent != null)
+            } finally {
+                _replySending.value = false
+            }
+        }
+    }
+
+    /** Open the Viewers sheet for a story (owner only — RLS). */
+    fun openViewers(story: Story) {
+        viewModelScope.launch {
+            _viewersLoading.value = true
+            try {
+                _viewersData.value = repo.loadViewersData(story)
+            } finally {
+                _viewersLoading.value = false
+            }
+        }
+    }
+
+    fun closeViewers() {
+        _viewersData.value = null
     }
 
     fun clearError() {
@@ -403,8 +496,8 @@ fun StoryStrip() {
         StoryViewer(
             group = group,
             startIndex = viewingIndex,
+            viewModel = viewModel,
             onClose = { viewing = null },
-            onMarkSeen = { viewModel.markSeen(it) },
             onDelete = { story ->
                 viewModel.deleteStory(story)
                 // If it was the last of my stories, the viewer closes.
@@ -553,17 +646,34 @@ private fun FriendStoryTile(group: StoryGroup, onClick: () -> Unit) {
 
 /**
  * Full-screen story viewer: segmented progress bars, avatar + name + age,
- * close button, delete (own stories). NO add-more button inside the
- * viewer (v3.2.0): the "Add Story" card in the strip is the only way
- * to add a story. Photo shows 5 s; video plays once for its own length.
+ * close button, delete for my own (inside the ⋯ menu). NO add-more button
+ * inside the viewer (v3.2.0): the "Add Story" card in the strip is the only
+ * way to add a story. Photo shows 5 s; video plays once for its own length.
  * Tap right = next, tap left = previous; swiping is not needed.
+ *
+ * v3.2.2 — the bottom is different depending on whose story it is:
+ * - SOMEONE ELSE'S story (mockup story-react-reply): an emoji reaction row
+ *   (exactly ❤️ 😂 😮 😢 🔥 👍 — emoji are correct HERE, reactions are
+ *   emoji by design) + a "Reply to <name>..." field with a green send
+ *   button. Tapping a reaction also counts as a view. The reply lands in
+ *   the owner's inbox as a chat message with the story attached.
+ * - MY OWN story (screenshot "Nijer Story"): header shows "Nijer Story" +
+ *   green online dot, X + ⋯ menu (Delete story) top-right, and a FROSTED
+ *   GLASS bottom bar with TWO items only — "N Viewers" (tappable, opens
+ *   the Viewers sheet) + Share (Android share sheet with the story link).
+ *   NO Highlight button anywhere: the user removed it on 2026-11-21 and
+ *   Story Highlights stay NOT built (decided 2026-11-19).
+ *
+ * Layering: the tap zones are drawn UNDER the header and the bottom
+ * controls, so the controls are hit-tested first and consume their own
+ * taps — tapping the reply field or an emoji never advances the story.
  */
 @Composable
 private fun StoryViewer(
     group: StoryGroup,
     startIndex: Int,
+    viewModel: StoryViewModel,
     onClose: () -> Unit,
-    onMarkSeen: (Story) -> Unit,
     onDelete: (Story) -> Unit
 ) {
     var index by remember { mutableStateOf(startIndex.coerceIn(0, (group.stories.size - 1).coerceAtLeast(0))) }
@@ -572,6 +682,20 @@ private fun StoryViewer(
     var progress by remember { mutableStateOf(0f) }
     // Video length in ms (from VideoView onPrepared); photo is fixed 5 s.
     var videoDurationMs by remember { mutableStateOf<Int?>(null) }
+    // Own-story ⋯ menu (Delete lives inside it now — no standalone
+    // Delete button any more, matching the "Nijer Story" screenshot).
+    var showOwnMenu by remember { mutableStateOf(false) }
+    // Viewers bottom-sheet (own stories only).
+    var showViewersSheet by remember { mutableStateOf(false) }
+    // Reply field (someone else's story only).
+    var replyText by remember { mutableStateOf("") }
+    val context = LocalContext.current
+
+    val viewCount by viewModel.viewCount.collectAsState()
+    val myReaction by viewModel.myReaction.collectAsState()
+    val replySending by viewModel.replySending.collectAsState()
+    val viewersData by viewModel.viewersData.collectAsState()
+    val viewersLoading by viewModel.viewersLoading.collectAsState()
 
     fun advance() {
         if (index + 1 < stories.size) index += 1 else onClose()
@@ -580,10 +704,42 @@ private fun StoryViewer(
         if (index > 0) index -= 1
     }
 
-    // Mark each story seen as soon as it is shown (turns the ring grey).
+    fun shareStory() {
+        val current = story ?: return
+        val intent = Intent(Intent.ACTION_SEND).apply {
+            type = "text/plain"
+            putExtra(Intent.EXTRA_TEXT, current.mediaUrl)
+        }
+        try {
+            context.startActivity(Intent.createChooser(intent, "Share story"))
+        } catch (e: Exception) {
+            Toast.makeText(context, "Could not share this story.", Toast.LENGTH_SHORT).show()
+        }
+    }
+
+    fun sendReply() {
+        val current = story ?: return
+        val text = replyText
+        if (text.isBlank() || replySending) return
+        viewModel.sendReply(current, text) { ok ->
+            if (ok) {
+                replyText = ""
+            } else {
+                Toast.makeText(
+                    context,
+                    "Could not send the reply. Try again.",
+                    Toast.LENGTH_SHORT
+                ).show()
+            }
+        }
+    }
+
+    // Mark each story seen as soon as it is shown (turns the ring grey)
+    // and record the server-side view (+ count + my reaction).
     LaunchedEffect(story?.id) {
         videoDurationMs = null
-        if (story != null) onMarkSeen(story)
+        replyText = ""
+        if (story != null) viewModel.storyShown(story, group.isMine)
     }
 
     // Progress timer: photo 5 s, video its own length (10 s until known).
@@ -609,6 +765,20 @@ private fun StoryViewer(
         LaunchedEffect(Unit) { onClose() }
         return
     }
+
+    // How long until this story disappears for good (kept above the
+    // bottom controls on both own and others' stories).
+    val remaining = TimeFormat.parse(story.expiresAt)?.let {
+        Duration.between(java.time.Instant.now(), it)
+    }
+    val disappearsText = if (remaining != null && !remaining.isNegative) {
+        val hours = remaining.toHours()
+        val mins = remaining.toMinutes() % 60
+        if (hours > 0) "Disappears in ${hours}h ${mins}m" else "Disappears in ${mins}m"
+    } else {
+        null
+    }
+    val firstName = group.user.fullName.ifBlank { group.user.username }.substringBefore(" ")
 
     Dialog(
         onDismissRequest = onClose,
@@ -645,7 +815,9 @@ private fun StoryViewer(
                 )
             }
 
-            // Tap zones: left third = previous, rest = next.
+            // Tap zones: left third = previous, rest = next. Drawn UNDER
+            // the header and the bottom controls, so a tap on a control
+            // never reaches these zones.
             Row(modifier = Modifier.fillMaxSize()) {
                 Box(
                     modifier = Modifier
@@ -694,26 +866,90 @@ private fun StoryViewer(
                     verticalAlignment = Alignment.CenterVertically,
                     modifier = Modifier.fillMaxWidth()
                 ) {
-                    Avatar(profile = group.user, size = AvatarSize.SM)
+                    if (group.isMine) {
+                        // "Nijer Story" screenshot: green online dot on
+                        // the avatar, "Nijer Story" + green dot.
+                        Box {
+                            Avatar(profile = group.user, size = AvatarSize.SM)
+                            Box(
+                                modifier = Modifier
+                                    .align(Alignment.BottomEnd)
+                                    .size(10.dp)
+                                    .clip(CircleShape)
+                                    .background(Emerald)
+                                    .border(1.5.dp, Color.Black, CircleShape)
+                            )
+                        }
+                    } else {
+                        Avatar(profile = group.user, size = AvatarSize.SM)
+                    }
                     Spacer(Modifier.width(8.dp))
-                    Column(modifier = Modifier.weight(1f)) {
-                        Text(
-                            text = group.user.fullName.ifBlank { group.user.username },
-                            color = Color.White,
-                            fontWeight = FontWeight.Bold,
-                            style = MaterialTheme.typography.bodyMedium,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                        Text(
-                            text = storyAge(story.createdAt),
-                            color = Color.White.copy(alpha = 0.8f),
-                            style = MaterialTheme.typography.bodySmall
-                        )
+                    if (group.isMine) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            modifier = Modifier.weight(1f)
+                        ) {
+                            Text(
+                                text = "Nijer Story",
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Spacer(Modifier.width(6.dp))
+                            Box(
+                                modifier = Modifier
+                                    .size(8.dp)
+                                    .clip(CircleShape)
+                                    .background(Emerald)
+                            )
+                        }
+                    } else {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = group.user.fullName.ifBlank { group.user.username },
+                                color = Color.White,
+                                fontWeight = FontWeight.Bold,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = storyAge(story.createdAt),
+                                color = Color.White.copy(alpha = 0.8f),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
                     }
                     if (group.isMine) {
-                        IconButton(onClick = { onDelete(story) }) {
-                            Icon(Icons.Default.Delete, contentDescription = "Delete story", tint = Color.White)
+                        // ⋯ menu: Delete is the only item for now (the
+                        // viewer previously had a standalone Delete
+                        // button — it now lives here, as in the
+                        // screenshot). No other menu items are specced.
+                        Box {
+                            IconButton(onClick = { showOwnMenu = true }) {
+                                Icon(
+                                    Icons.Default.MoreVert,
+                                    contentDescription = "Story options",
+                                    tint = Color.White
+                                )
+                            }
+                            DropdownMenu(
+                                expanded = showOwnMenu,
+                                onDismissRequest = { showOwnMenu = false }
+                            ) {
+                                DropdownMenuItem(
+                                    text = { Text("Delete story") },
+                                    leadingIcon = {
+                                        Icon(Icons.Default.Delete, contentDescription = null)
+                                    },
+                                    onClick = {
+                                        showOwnMenu = false
+                                        onDelete(story)
+                                    }
+                                )
+                            }
                         }
                     }
                     IconButton(onClick = onClose) {
@@ -722,22 +958,451 @@ private fun StoryViewer(
                 }
             }
 
-            // Bottom hint: how long until this story disappears for good.
-            val remaining = TimeFormat.parse(story.expiresAt)?.let {
-                Duration.between(java.time.Instant.now(), it)
-            }
-            if (remaining != null && !remaining.isNegative) {
-                val hours = remaining.toHours()
-                val mins = remaining.toMinutes() % 60
-                Text(
-                    text = if (hours > 0) "Disappears in ${hours}h ${mins}m" else "Disappears in ${mins}m",
-                    color = Color.White.copy(alpha = 0.7f),
-                    style = MaterialTheme.typography.bodySmall,
-                    modifier = Modifier
-                        .align(Alignment.BottomCenter)
-                        .padding(bottom = 20.dp)
-                )
+            // Bottom controls — own story: frosted-glass bar (Viewers +
+            // Share only, NO Highlight); others' story: reaction row +
+            // reply field. Drawn ABOVE the tap zones, so every control
+            // consumes its own taps.
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .align(Alignment.BottomCenter)
+                    .padding(start = 16.dp, end = 16.dp, bottom = 16.dp)
+            ) {
+                if (disappearsText != null) {
+                    Text(
+                        text = disappearsText,
+                        color = Color.White.copy(alpha = 0.7f),
+                        style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier
+                            .align(Alignment.CenterHorizontally)
+                            .padding(bottom = 8.dp)
+                    )
+                }
+                if (group.isMine) {
+                    // Frosted-glass bar (dark glassy pill, like the nav
+                    // treatment): Viewers count + Share. NO Highlight —
+                    // removed at the user's decision 2026-11-21.
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .clip(RoundedCornerShape(20.dp))
+                            .background(Color.White.copy(alpha = 0.22f))
+                            .border(
+                                1.dp,
+                                Color.White.copy(alpha = 0.35f),
+                                RoundedCornerShape(20.dp)
+                            )
+                            .padding(horizontal = 16.dp, vertical = 12.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(
+                            modifier = Modifier
+                                .weight(1f)
+                                .clickable {
+                                    viewModel.openViewers(story)
+                                    showViewersSheet = true
+                                },
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.People,
+                                contentDescription = null,
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = "${formatCompactCount(viewCount)} Viewers",
+                                color = Color.White,
+                                fontWeight = FontWeight.SemiBold,
+                                style = MaterialTheme.typography.bodyMedium,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Column(
+                            modifier = Modifier.clickable(onClick = ::shareStory),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Icon(
+                                Icons.Default.Share,
+                                contentDescription = "Share story",
+                                tint = Color.White,
+                                modifier = Modifier.size(22.dp)
+                            )
+                            Text(
+                                text = "Share",
+                                color = Color.White,
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                    }
+                } else {
+                    // Views count (mockup: "👁 128 views", bottom-right
+                    // above the reaction row — eye is a real vector
+                    // icon). Hidden until the server count loads.
+                    if (viewCount > 0) {
+                        Row(
+                            modifier = Modifier.align(Alignment.End),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Icon(
+                                Icons.Default.Visibility,
+                                contentDescription = null,
+                                tint = Color.White.copy(alpha = 0.85f),
+                                modifier = Modifier.size(14.dp)
+                            )
+                            Spacer(Modifier.width(4.dp))
+                            Text(
+                                text = "$viewCount views",
+                                color = Color.White.copy(alpha = 0.85f),
+                                style = MaterialTheme.typography.bodySmall
+                            )
+                        }
+                        Spacer(Modifier.height(8.dp))
+                    }
+                    // Emoji reaction row (mockup story-react-reply):
+                    // the tapped emoji shows a selected state (red
+                    // tint + stronger border + slightly larger).
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween
+                    ) {
+                        STORY_REACTION_EMOJIS.forEach { emoji ->
+                            val selected = myReaction == emoji
+                            Box(
+                                modifier = Modifier
+                                    .size(if (selected) 56.dp else 52.dp)
+                                    .clip(CircleShape)
+                                    .background(
+                                        if (selected) Color(0xFFEF4444).copy(alpha = 0.35f)
+                                        else Color.White.copy(alpha = 0.18f)
+                                    )
+                                    .border(
+                                        1.5.dp,
+                                        if (selected) Color.White.copy(alpha = 0.7f)
+                                        else Color.White.copy(alpha = 0.35f),
+                                        CircleShape
+                                    )
+                                    .clickable { viewModel.toggleReaction(story, emoji) },
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(text = emoji, fontSize = 28.sp)
+                            }
+                        }
+                    }
+                    // Reply field + green send button.
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(top = 16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        TextField(
+                            value = replyText,
+                            onValueChange = { replyText = it },
+                            placeholder = {
+                                Text(
+                                    text = "Reply to $firstName...",
+                                    color = Color.White.copy(alpha = 0.85f)
+                                )
+                            },
+                            singleLine = true,
+                            modifier = Modifier
+                                .weight(1f)
+                                .height(52.dp)
+                                .border(
+                                    1.5.dp,
+                                    Color.White.copy(alpha = 0.55f),
+                                    RoundedCornerShape(26.dp)
+                                ),
+                            shape = RoundedCornerShape(26.dp),
+                            colors = TextFieldDefaults.colors(
+                                focusedContainerColor = Color.Black.copy(alpha = 0.28f),
+                                unfocusedContainerColor = Color.Black.copy(alpha = 0.28f),
+                                focusedIndicatorColor = Color.Transparent,
+                                unfocusedIndicatorColor = Color.Transparent,
+                                disabledIndicatorColor = Color.Transparent,
+                                focusedTextColor = Color.White,
+                                unfocusedTextColor = Color.White,
+                                cursorColor = Color.White
+                            ),
+                            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Send),
+                            keyboardActions = KeyboardActions(onSend = { sendReply() })
+                        )
+                        Spacer(Modifier.width(10.dp))
+                        Box(
+                            modifier = Modifier
+                                .size(52.dp)
+                                .clip(CircleShape)
+                                .background(Emerald)
+                                .clickable(
+                                    enabled = replyText.isNotBlank() && !replySending,
+                                    onClick = ::sendReply
+                                ),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                Icons.AutoMirrored.Filled.Send,
+                                contentDescription = "Send reply",
+                                tint = Color.White,
+                                modifier = Modifier.size(24.dp)
+                            )
+                        }
+                    }
+                }
             }
         }
+    }
+
+    // Viewers bottom-sheet (own stories only), opened from the frosted
+    // bar's "N Viewers" item.
+    if (showViewersSheet) {
+        StoryViewersSheet(
+            story = story,
+            data = viewersData,
+            loading = viewersLoading,
+            onDismiss = {
+                showViewersSheet = false
+                viewModel.closeViewers()
+            }
+        )
+    }
+}
+
+/**
+ * Viewers bottom-sheet (mockup story-viewers): "Viewed by N" header
+ * with an eye vector icon, a REPLIES section on top (reply rows with
+ * the story thumbnail + text + time), then the VIEWERS list (avatar,
+ * name, view time, reaction emoji on the right where one was left).
+ * Data comes from the server tables (pingchat_story_views /
+ * pingchat_story_reactions / pingchat_messages with story_id set) —
+ * never from the local seen-state.
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun StoryViewersSheet(
+    story: Story,
+    data: StoryViewersData?,
+    loading: Boolean,
+    onDismiss: () -> Unit
+) {
+    val colors = pingChatColors
+    val sheetState = rememberModalBottomSheetState()
+    ModalBottomSheet(
+        onDismissRequest = onDismiss,
+        sheetState = sheetState
+    ) {
+        LazyColumn(
+            modifier = Modifier.fillMaxWidth(),
+            contentPadding = PaddingValues(start = 16.dp, end = 16.dp, bottom = 24.dp)
+        ) {
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Icon(
+                        Icons.Default.Visibility,
+                        contentDescription = null,
+                        tint = colors.text,
+                        modifier = Modifier.size(22.dp)
+                    )
+                    Spacer(Modifier.width(8.dp))
+                    Text(
+                        text = "Viewed by ${data?.viewCount ?: 0}",
+                        style = MaterialTheme.typography.titleLarge,
+                        fontWeight = FontWeight.Bold,
+                        color = colors.text,
+                        modifier = Modifier.weight(1f)
+                    )
+                    IconButton(onClick = onDismiss) {
+                        Icon(
+                            Icons.Default.Close,
+                            contentDescription = "Close",
+                            tint = colors.muted
+                        )
+                    }
+                }
+            }
+            item {
+                Text(
+                    text = "REPLIES",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.muted,
+                    modifier = Modifier.padding(top = 18.dp)
+                )
+            }
+            if (loading && data == null) {
+                item {
+                    Text(
+                        text = "Loading…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.muted,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                }
+            } else if (data?.replies.isNullOrEmpty()) {
+                item {
+                    Text(
+                        text = "No replies yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.muted,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                }
+            } else {
+                items(data?.replies ?: emptyList(), key = { it.message.id }) { reply ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        AsyncImage(
+                            model = story.mediaUrl,
+                            contentDescription = "Story",
+                            modifier = Modifier
+                                .size(46.dp)
+                                .clip(RoundedCornerShape(12.dp)),
+                            contentScale = ContentScale.Crop
+                        )
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = reply.sender?.fullName
+                                    ?.ifBlank { reply.sender?.username } ?: "Someone",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = colors.text,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = reply.message.body,
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.muted,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        Text(
+                            text = storyAge(reply.message.createdAt),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = colors.muted
+                        )
+                    }
+                }
+            }
+            item {
+                // Divider between the REPLIES and VIEWERS sections.
+                Box(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(top = 18.dp)
+                        .height(1.dp)
+                        .background(colors.border)
+                )
+                Text(
+                    text = "VIEWERS",
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Bold,
+                    color = colors.muted,
+                    modifier = Modifier.padding(top = 18.dp)
+                )
+            }
+            if (loading && data == null) {
+                item {
+                    Text(
+                        text = "Loading…",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.muted,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                }
+            } else if (data?.viewers.isNullOrEmpty()) {
+                item {
+                    Text(
+                        text = "No one has viewed this story yet.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.muted,
+                        modifier = Modifier.padding(vertical = 12.dp)
+                    )
+                }
+            } else {
+                items(data?.viewers ?: emptyList(), key = { it.view.id }) { item ->
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Avatar(profile = item.viewer, size = AvatarSize.MD)
+                        Spacer(Modifier.width(12.dp))
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = item.viewer?.fullName
+                                    ?.ifBlank { item.viewer?.username } ?: "Someone",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.SemiBold,
+                                color = colors.text,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                            Text(
+                                text = storyAge(item.view.viewedAt),
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.muted
+                            )
+                        }
+                        if (item.reactionEmoji != null) {
+                            Text(text = item.reactionEmoji, fontSize = 21.sp)
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/**
+ * Quote shown at the top of a chat bubble when the message is a story
+ * reply (message.storyId != null): small story thumbnail + a
+ * "Replied to your story" caption line above the reply text.
+ *
+ * WIRING (not this file — ChatScreen.kt is outside this worker's
+ * scope): inside the message bubble, above the body text, render
+ * `if (message.storyId != null) StoryReplyQuote(message, mine = mine)`.
+ * The model fields (ChatMessage.storyId / storyMediaUrl) and this
+ * composable are ready; only that one bubble call-site is left.
+ */
+@Composable
+fun StoryReplyQuote(
+    message: ChatMessage,
+    mine: Boolean = false,
+    modifier: Modifier = Modifier
+) {
+    val colors = pingChatColors
+    Row(
+        modifier = modifier,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (!message.storyMediaUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = message.storyMediaUrl,
+                contentDescription = "Story",
+                modifier = Modifier
+                    .size(40.dp)
+                    .clip(RoundedCornerShape(8.dp)),
+                contentScale = ContentScale.Crop
+            )
+            Spacer(Modifier.width(8.dp))
+        }
+        Text(
+            text = "Replied to your story",
+            style = MaterialTheme.typography.bodySmall,
+            fontWeight = FontWeight.SemiBold,
+            color = if (mine) colors.bubbleMeText.copy(alpha = 0.9f) else colors.muted,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
     }
 }

@@ -25,6 +25,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubble
 import androidx.compose.material.icons.filled.Group
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowRight
 import androidx.compose.material.icons.filled.NotificationsOff
 import androidx.compose.material.icons.filled.PushPin
 import androidx.compose.material.icons.filled.Search
@@ -53,8 +55,12 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.BaselineShift
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.Dialog
@@ -78,8 +84,8 @@ import com.mdhasibulislam.pingchat.ui.viewmodel.ChatsViewModel
  *  v3.1.0: groups in the same list, long-press menu (pin / mute /
  *  archive), Archived section, new-group button.
  *  v3.1.1: story strip moved to the top, above the search bar.
- *  v3.2.0 (mockup restyle): bold "PingChat" header with a green logo tile,
- *  search icon (search field hidden until tapped) + own avatar on the
+ *  v3.2.0 (mockup restyle): bold "Ping Chat" header wordmark with a
+ *  green logo tile, search icon (search field hidden until tapped) + own avatar on the
  *  right, "Stories" title row + "See all" (in StoryStrip), Chat/Active
  *  tab pills, 56dp chat avatars, green FAB (new chat / group) floating
  *  above the bottom nav. Behaviour unchanged: search filtering,
@@ -150,8 +156,9 @@ fun ChatsScreen(
             .background(colors.bg)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // v3.2.0 header (mockup): green logo tile + bold "PingChat"
-            // on the left; search icon + own avatar on the right. The
+            // v3.2.0 header (mockup): green logo tile + bold "Ping Chat"
+            // wordmark with superscript "BD" (v3.2.2) on the left; search
+            // icon + own avatar on the right. The
             // old "Chats / Your conversations." text and the header
             // GroupAdd button are gone — group creation is on the FAB.
             Row(
@@ -175,8 +182,23 @@ fun ChatsScreen(
                     )
                 }
                 Spacer(Modifier.width(10.dp))
+                // v3.2.2 wordmark (login mockup): "Ping Chat" (two words)
+                // with "BD" as a small emerald superscript above "Chat"
+                // — ~35% of the 22sp base size. Green P logo tile stays.
                 Text(
-                    text = "PingChat",
+                    text = buildAnnotatedString {
+                        append("Ping Chat")
+                        withStyle(
+                            SpanStyle(
+                                baselineShift = BaselineShift.Superscript,
+                                fontSize = 7.7.sp, // 35% of 22sp
+                                color = Emerald,
+                                letterSpacing = 1.sp
+                            )
+                        ) {
+                            append("BD")
+                        }
+                    },
                     fontSize = 22.sp,
                     fontWeight = FontWeight.Bold,
                     color = colors.text,
@@ -270,7 +292,7 @@ fun ChatsScreen(
                         )
                     }
                 } else {
-                    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 110.dp)) {
+                    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 84.dp)) {
                         items(activeItems, key = { it.conversation.id }) { item ->
                             ActiveRow(
                                 item = item,
@@ -280,7 +302,7 @@ fun ChatsScreen(
                     }
                 }
             } else {
-                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 110.dp)) {
+                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 84.dp)) {
                     if (filtered.isEmpty() && filteredArchived.isEmpty()) {
                         item {
                             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -315,9 +337,15 @@ fun ChatsScreen(
                                         .padding(horizontal = 16.dp, vertical = 12.dp),
                                     verticalAlignment = Alignment.CenterVertically
                                 ) {
+                                    Icon(
+                                        if (showArchived) Icons.Default.KeyboardArrowDown else Icons.Default.KeyboardArrowRight,
+                                        contentDescription = if (showArchived) "Collapse archived" else "Expand archived",
+                                        tint = colors.muted,
+                                        modifier = Modifier.size(24.dp)
+                                    )
+                                    Spacer(Modifier.width(4.dp))
                                     Text(
-                                        text = if (showArchived) "▼ Archived (${filteredArchived.size})"
-                                        else "▶ Archived (${filteredArchived.size})",
+                                        text = "Archived (${filteredArchived.size})",
                                         style = MaterialTheme.typography.titleMedium,
                                         color = colors.muted,
                                         modifier = Modifier.weight(1f)
@@ -341,9 +369,9 @@ fun ChatsScreen(
             }
         }
 
-        // v3.2.1 FAB: green circle, bottom-right, floating just above
-        // the FLOATING bottom bar — 14dp bar bottom margin + 80dp bar
-        // height + 16dp gap = 110dp bottom padding. Opens the EXISTING
+        // v3.2.2 FAB: green circle, bottom-right, floating just above
+        // the FLOATING bottom bar — 8dp bar bottom margin + 60dp bar
+        // height + 16dp gap = 84dp bottom padding. Opens the EXISTING
         // new-chat/group flow (showCreateGroup dialog).
         FloatingActionButton(
             onClick = { showCreateGroup = true },
@@ -352,7 +380,7 @@ fun ChatsScreen(
             shape = CircleShape,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 110.dp)
+                .padding(end = 16.dp, bottom = 84.dp)
         ) {
             Icon(Icons.Default.Group, contentDescription = "New chat or group")
         }

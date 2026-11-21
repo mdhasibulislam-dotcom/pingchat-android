@@ -141,7 +141,7 @@ fun PeopleScreen(
                     Text("No people found.", color = colors.muted, modifier = Modifier.padding(24.dp))
                 }
             } else {
-                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 110.dp)) {
+                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 84.dp)) {
                     items(filtered, key = { it.id }) { person ->
                         val state = statuses[person.id] ?: FriendState.NONE
                         PersonRow(
@@ -168,7 +168,7 @@ fun PeopleScreen(
                     Text("No pending friend requests.", color = colors.muted, modifier = Modifier.padding(24.dp))
                 }
             } else {
-                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 110.dp)) {
+                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 84.dp)) {
                     items(requests, key = { it.first.id }) { (friendship, profile) ->
                         Row(
                             modifier = Modifier

@@ -1869,6 +1869,13 @@ private fun MessageBubble(
                         }
                         Spacer(Modifier.height(4.dp))
                     }
+                    // v3.2.2: a story reply shows the story quoted above
+                    // the reply text (StoryReplyQuote is public in
+                    // StoryScreens.kt, same package — no import needed).
+                    if (message.storyId != null) {
+                        StoryReplyQuote(message, mine = mine)
+                        Spacer(Modifier.height(4.dp))
+                    }
                     when (message.kind) {
                         "photo" -> {
                             // Expired (7+ days old, or no media URL): the

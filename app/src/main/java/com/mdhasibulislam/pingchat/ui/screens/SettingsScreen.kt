@@ -58,17 +58,25 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.BaselineShift
+import androidx.compose.ui.text.SpanStyle
+import androidx.compose.ui.text.buildAnnotatedString
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.text.withStyle
+import androidx.compose.ui.unit.TextUnit
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.mdhasibulislam.pingchat.BuildConfig
 import com.mdhasibulislam.pingchat.data.CallHistoryItem
 import com.mdhasibulislam.pingchat.data.Prefs
 import com.mdhasibulislam.pingchat.data.Profile
 import com.mdhasibulislam.pingchat.data.TimeFormat
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
+import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
 import com.mdhasibulislam.pingchat.ui.viewmodel.CallHistoryViewModel
 import com.mdhasibulislam.pingchat.ui.viewmodel.ProfileViewModel
@@ -108,7 +116,7 @@ fun SettingsScreen(
             .fillMaxSize()
             .background(colors.bg)
             .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 110.dp), // v3.2.1: last row clears the floating bar
+            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 84.dp), // v3.2.2: 60dp floating bar + 8dp margin + 16dp gap
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium, color = colors.text)
@@ -183,8 +191,8 @@ fun SettingsScreen(
             HorizontalDivider(color = colors.border)
             SettingsNavRow(
                 icon = Icons.Default.Info,
-                title = "About PingChat",
-                subtitle = "Version 3.2.0",
+                title = "About PingChat BD",
+                subtitle = "Version ${BuildConfig.VERSION_NAME}",
                 onClick = { aboutDialog = true }
             )
         }
@@ -262,15 +270,20 @@ fun SettingsScreen(
         )
     }
 
-    // About: the real version, 3.2.0.
+    // About: the real version from BuildConfig (v3.2.2) — never hardcoded.
     if (aboutDialog) {
         AlertDialog(
             onDismissRequest = { aboutDialog = false },
-            title = { Text("About PingChat") },
+            title = { Text("About PingChat BD") },
             text = {
                 Text(
-                    "PingChat\nVersion 3.2.0\n\nConnect • Chat • Share\n\n" +
-                        "A simple, private messaging app — chats, friends, profiles and calls.",
+                    text = buildAnnotatedString {
+                        append(pingChatWordmark(MaterialTheme.typography.bodyMedium.fontSize))
+                        append(
+                            "\nVersion ${BuildConfig.VERSION_NAME}\n\nConnect • Chat • Share\n\n" +
+                                "A simple, private messaging app — chats, friends, profiles and calls."
+                        )
+                    },
                     style = MaterialTheme.typography.bodyMedium,
                     color = colors.text
                 )
@@ -279,6 +292,25 @@ fun SettingsScreen(
                 TextButton(onClick = { aboutDialog = false }) { Text("Close") }
             }
         )
+    }
+}
+
+/**
+ * The v3.2.2 wordmark: "Ping Chat" with a small emerald "BD" superscript
+ * above "Chat" (login mockup: 36px heading, 13px emerald sup ≈ 35%).
+ */
+private fun pingChatWordmark(baseSize: TextUnit): AnnotatedString {
+    return buildAnnotatedString {
+        append("Ping Chat")
+        withStyle(
+            SpanStyle(
+                baselineShift = BaselineShift.Superscript,
+                fontSize = baseSize * 0.35f,
+                color = Emerald
+            )
+        ) {
+            append("BD")
+        }
     }
 }
 
@@ -378,7 +410,7 @@ fun CallsScreen() {
                 )
             }
         } else {
-            LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 110.dp)) {
+            LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 84.dp)) { // v3.2.2: clears the 60dp floating bar + 8dp margin + 16dp gap
                 items(history, key = { it.row.id }) { item ->
                     CallHistoryRow(item = item, onLongPress = { menuItem = item })
                 }
