@@ -1,8 +1,10 @@
 package com.mdhasibulislam.pingchat.ui.screens
 
 import android.graphics.Bitmap
+import android.widget.Toast
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -21,6 +23,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
+import androidx.compose.material.icons.filled.ContentCopy
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -43,6 +46,10 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalClipboardManager
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.AnnotatedString
+import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
@@ -76,12 +83,20 @@ private fun qrBitmap(text: String, size: Int = 512): Bitmap? {
     }
 }
 
+/** Display form of a TOTP secret: grouped in 4s ("ABCD EFGH …") so it
+ *  is easy to read and type by hand. Display-only — the Copy button
+ *  copies the raw secret with no spaces. */
+private fun groupedSecret(secret: String): String =
+    secret.chunked(4).joinToString(" ")
+
 /**
  * Two-Factor Authentication (v3.2.0) — REAL TOTP via supabase-kt 3.9.0
  * auth-kt (auth.mfa): enroll returns the otpauth URI + secret, the QR
  * code is rendered from that URI, and the 6-digit code from the user's
  * authenticator app verifies the factor (challenge + verify, which
- * promotes the session to AAL2). Disabling asks for a current code
+ * promotes the session to AAL2). The secret is also shown grouped in
+ * monospace with a Copy button, for authenticator apps that cannot
+ * scan the QR. Disabling asks for a current code
  * first, because unenrolling a verified factor needs an AAL2 session.
  *
  * NOTE: TOTP must be enabled in the Supabase dashboard (Auth > MFA)
@@ -91,6 +106,8 @@ private fun qrBitmap(text: String, size: Int = 512): Bitmap? {
 @Composable
 fun TwoFactorScreen(onBack: () -> Unit) {
     val colors = pingChatColors
+    val context = LocalContext.current
+    val clipboard = LocalClipboardManager.current
     val authRepo = remember { AuthRepository() }
     val scope = rememberCoroutineScope()
 
@@ -280,14 +297,46 @@ fun TwoFactorScreen(onBack: () -> Unit) {
                             style = MaterialTheme.typography.bodyMedium,
                             color = colors.text2
                         )
-                        Spacer(Modifier.height(4.dp))
-                        Text(
-                            text = pending.secret,
-                            style = MaterialTheme.typography.bodyMedium,
-                            color = colors.text,
-                            fontWeight = FontWeight.Medium,
-                            textAlign = TextAlign.Center
-                        )
+                        Spacer(Modifier.height(8.dp))
+                        // Secret key, grouped in 4s in monospace so it is
+                        // easy to read/type, with a Copy button for
+                        // authenticator apps that cannot scan the QR.
+                        // Displayed grouped, but the RAW secret (no
+                        // spaces) is what gets copied — it is the same
+                        // pending.secret the QR code was rendered from.
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .background(colors.card, RoundedCornerShape(12.dp))
+                                .border(1.dp, colors.border, RoundedCornerShape(12.dp))
+                                .padding(12.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = groupedSecret(pending.secret),
+                                style = MaterialTheme.typography.bodyMedium,
+                                fontFamily = FontFamily.Monospace,
+                                color = colors.text,
+                                fontWeight = FontWeight.Medium,
+                                textAlign = TextAlign.Center,
+                                modifier = Modifier.weight(1f)
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            OutlinedButton(
+                                onClick = {
+                                    clipboard.setText(AnnotatedString(pending.secret))
+                                    Toast.makeText(context, "Copied", Toast.LENGTH_SHORT).show()
+                                }
+                            ) {
+                                Icon(
+                                    Icons.Default.ContentCopy,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(18.dp)
+                                )
+                                Spacer(Modifier.width(6.dp))
+                                Text("Copy")
+                            }
+                        }
                         Spacer(Modifier.height(20.dp))
                         OutlinedTextField(
                             value = code,

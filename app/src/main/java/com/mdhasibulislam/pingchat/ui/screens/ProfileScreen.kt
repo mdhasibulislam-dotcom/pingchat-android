@@ -157,7 +157,7 @@ fun ProfileScreen(
     }
 
     Column(
-        modifier = Modifier.fillMaxSize().background(colors.bg).verticalScroll(rememberScrollState()).padding(bottom = 84.dp) // v3.2.2: last row clears the floating bar (60dp bar + 8dp bottom margin + 16dp gap)
+        modifier = Modifier.fillMaxSize().background(colors.bg).verticalScroll(rememberScrollState()).padding(bottom = 127.dp) // v3.2.2: last row clears the floating bar (63dp bar + 48dp bottom margin + 16dp gap)
     ) {
         // Top bar with back arrow.
         Row(

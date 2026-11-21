@@ -292,7 +292,7 @@ fun ChatsScreen(
                         )
                     }
                 } else {
-                    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 84.dp)) {
+                    LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 127.dp)) {
                         items(activeItems, key = { it.conversation.id }) { item ->
                             ActiveRow(
                                 item = item,
@@ -302,7 +302,7 @@ fun ChatsScreen(
                     }
                 }
             } else {
-                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 84.dp)) {
+                LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 127.dp)) {
                     if (filtered.isEmpty() && filteredArchived.isEmpty()) {
                         item {
                             Box(modifier = Modifier.fillMaxWidth(), contentAlignment = Alignment.Center) {
@@ -370,9 +370,10 @@ fun ChatsScreen(
         }
 
         // v3.2.2 FAB: green circle, bottom-right, floating just above
-        // the FLOATING bottom bar — 8dp bar bottom margin + 60dp bar
-        // height + 16dp gap = 84dp bottom padding. Opens the EXISTING
-        // new-chat/group flow (showCreateGroup dialog).
+        // the FLOATING bottom bar — 48dp bar bottom margin + 63dp bar
+        // height + 8dp gap = 119dp bottom padding, 22dp from the right
+        // edge, 48dp wide. Opens the EXISTING new-chat/group flow
+        // (showCreateGroup dialog).
         FloatingActionButton(
             onClick = { showCreateGroup = true },
             containerColor = Emerald,
@@ -380,7 +381,8 @@ fun ChatsScreen(
             shape = CircleShape,
             modifier = Modifier
                 .align(Alignment.BottomEnd)
-                .padding(end = 16.dp, bottom = 84.dp)
+                .padding(end = 22.dp, bottom = 119.dp)
+                .size(48.dp)
         ) {
             Icon(Icons.Default.Group, contentDescription = "New chat or group")
         }

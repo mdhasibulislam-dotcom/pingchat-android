@@ -116,7 +116,7 @@ fun SettingsScreen(
             .fillMaxSize()
             .background(colors.bg)
             .verticalScroll(rememberScrollState())
-            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 84.dp), // v3.2.2: 60dp floating bar + 8dp margin + 16dp gap
+            .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 127.dp), // v3.2.2: 63dp floating bar + 48dp margin + 16dp gap
         verticalArrangement = Arrangement.spacedBy(16.dp)
     ) {
         Text("Settings", style = MaterialTheme.typography.headlineMedium, color = colors.text)
@@ -410,7 +410,7 @@ fun CallsScreen() {
                 )
             }
         } else {
-            LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 84.dp)) { // v3.2.2: clears the 60dp floating bar + 8dp margin + 16dp gap
+            LazyColumn(modifier = Modifier.fillMaxSize(), contentPadding = PaddingValues(bottom = 127.dp)) { // v3.2.2: clears the 63dp floating bar + 48dp margin + 16dp gap
                 items(history, key = { it.row.id }) { item ->
                     CallHistoryRow(item = item, onLongPress = { menuItem = item })
                 }

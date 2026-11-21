@@ -13,12 +13,13 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
-import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.ChatBubble
@@ -85,7 +86,14 @@ fun MainScreen(
     onPrivacyPolicyClick: () -> Unit = {},
     // v3.2.0 (worker A): own-profile overlay's Edit Profile button opens
     // the "edit_profile" route — MainActivity wires this param.
-    onEditProfileClick: () -> Unit = {}
+    onEditProfileClick: () -> Unit = {},
+    // v3.2.2 fix: Settings tab rows for Notifications / Appearance —
+    // MainActivity wires these to the "notifications" / "appearance"
+    // routes (same pattern as onPrivacySecurityClick above). Without
+    // them the tab's SettingsScreen fell back to its empty defaults
+    // and both rows did nothing.
+    onNotificationsClick: () -> Unit = {},
+    onAppearanceClick: () -> Unit = {}
 ) {
     var tab by remember { mutableIntStateOf(0) }
     // Friend-request notification tap: switch to the People tab (2) once,
@@ -188,11 +196,13 @@ fun MainScreen(
     // which now lives only in Settings > Appearance.
     // v3.2.2: the bottom nav is a FLOATING pill bar (Telegram-style),
     // drawn OVER the tab content instead of a Scaffold bottomBar, so
-    // lists scroll behind it. Slim glassy bar — 60dp tall, 18dp
-    // corners, 12dp side margins, 8dp bottom margin, 4dp shadow,
-    // translucent card colour (0.72 alpha) with a subtle border; the
-    // selected tab gets a 40dp Emerald circle behind its icon. The bar
-    // itself is added after the tab content below.
+    // lists scroll behind it. Hasibul's design (measured screenshot):
+    // 63dp tall, full-pill corners (~31dp), 35dp side margins, 48dp
+    // bottom margin, 4dp shadow, translucent card colour (0.72 alpha)
+    // with a subtle border; the selected tab is a 58x47dp Emerald
+    // rounded-square pill (icon + label both inside it), 18dp from
+    // the bar's left edge. The bar itself is added after the tab
+    // content below.
     Scaffold { padding ->
         Box(
             modifier = Modifier
@@ -256,19 +266,25 @@ fun MainScreen(
                     onPrivacyPolicyClick = onPrivacyPolicyClick,
                     // v3.2.0: Settings profile card is the second Edit
                     // Profile entry point (same route as the overlay).
-                    onEditProfileClick = onEditProfileClick
+                    onEditProfileClick = onEditProfileClick,
+                    // v3.2.2 fix: forward the Notifications / Appearance
+                    // callbacks — this tab is the Settings screen the
+                    // user actually sees; without these the rows ran
+                    // SettingsScreen's empty defaults and did nothing.
+                    onNotificationsClick = onNotificationsClick,
+                    onAppearanceClick = onAppearanceClick
                 )
             }
             // v3.2.2: floating bottom bar overlay (Telegram-style) —
             // always on top of the tab content; the lists scroll behind
-            // it (each list carries 84dp bottom padding so its last
-            // row is never hidden by the bar: 60dp bar + 8dp bottom
+            // it (each list carries 127dp bottom padding so its last
+            // row is never hidden by the bar: 63dp bar + 48dp bottom
             // margin + 16dp gap).
             Column(
                 modifier = Modifier
                     .align(Alignment.BottomCenter)
                     .fillMaxWidth()
-                    .padding(start = 12.dp, end = 12.dp, bottom = 8.dp),
+                    .padding(start = 35.dp, end = 35.dp, bottom = 48.dp),
                 // 8dp gap between the voice mini-player and the bar —
                 // the player never sits flush on the bar.
                 verticalArrangement = Arrangement.spacedBy(8.dp)
@@ -278,17 +294,17 @@ fun MainScreen(
                 // the bottom bar. Tap it to jump back to that chat.
                 // Renders nothing when nothing is playing.
                 // v3.2.2 FAB-overlap fix: on the Chats tab the FAB sits
-                // at bottom 84dp, end 16dp (56dp wide, so its left edge
-                // is 72dp from the screen edge). A full-width player
-                // above the bar (76dp to ~134dp from the bottom) would
-                // cover it, so here the player stops 68dp short on the
-                // right (12dp column margin + 68dp = 80dp from the
-                // screen edge), clearing the FAB by 8dp. Other tabs
-                // have no FAB, so the player stays full-width there.
+                // at bottom 119dp, end 22dp (48dp wide, so its left edge
+                // is 70dp from the screen edge). A full-width player
+                // above the bar would cover it, so here the player stops
+                // 43dp short on the right (35dp column margin + 43dp =
+                // 78dp from the screen edge), clearing the FAB by 8dp.
+                // Other tabs have no FAB, so the player stays full-width
+                // there.
                 VoiceMiniPlayer(
                     label = "Voice message",
                     modifier = if (tab == 0 && !showProfile && publicProfile == null) {
-                        Modifier.padding(end = 68.dp)
+                        Modifier.padding(end = 43.dp)
                     } else {
                         Modifier
                     },
@@ -297,23 +313,27 @@ fun MainScreen(
                     }
                 )
                 Surface(
-                    shape = RoundedCornerShape(18.dp),
+                    shape = RoundedCornerShape(31.dp),
                     color = colors.card.copy(alpha = 0.72f),
                     shadowElevation = 4.dp,
                     border = BorderStroke(1.dp, colors.border.copy(alpha = 0.6f))
                 ) {
                     // Custom tab row, not Material3 NavigationBar: its
-                    // fixed 80dp height cannot shrink to the 60dp bar,
-                    // and the mockup needs a green circle behind the
-                    // selected icon. Same tabs, order and behaviour.
+                    // fixed 80dp height cannot shrink to the 63dp bar,
+                    // and the mockup needs a green pill behind the
+                    // selected tab. Same tabs, order and behaviour.
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .height(60.dp),
+                            .height(63.dp),
                         verticalAlignment = Alignment.CenterVertically
                     ) {
+                        // Hasibul's design: the selected pill sits 18dp
+                        // from the bar's left edge; the first tab's slot
+                        // is exactly the 58dp pill width.
+                        Spacer(Modifier.width(18.dp))
                         FloatingNavTab(
-                            modifier = Modifier.weight(1f),
+                            modifier = Modifier.width(58.dp),
                             label = "Chats",
                             selected = tab == 0 && !showProfile,
                             selectedIcon = Icons.Default.ChatBubble,
@@ -373,12 +393,14 @@ fun MainScreen(
     }
 }
 
-/** One tab of the v3.2.2 floating pill bar (mockup: dark glassy bar,
- *  selected tab = green circle behind the icon, labels under icons).
- *  Every tab uses the same 40dp icon slot — a solid Emerald circle
- *  with a 22dp white icon when selected, a plain 24dp muted icon
- *  otherwise — so all four labels sit on one baseline. Slot (40dp)
- *  + 2dp gap + 11sp label is 55dp, centred in the 60dp bar. */
+/** One tab of the v3.2.2 floating pill bar (Hasibul's design: the
+ *  selected tab is a 58x47dp Emerald rounded-square pill with the
+ *  icon + label both inside it, white; unselected tabs show a plain
+ *  24dp muted icon above an 11sp label, centred in their slot).
+ *  The first tab's slot is exactly the 58dp pill width (plus an 18dp
+ *  inset from the bar edge, applied by the Row); the other three
+ *  tabs share the remaining width equally, so the pill is centred
+ *  in its slot whichever tab is selected. */
 @Composable
 private fun FloatingNavTab(
     modifier: Modifier = Modifier,
@@ -389,47 +411,61 @@ private fun FloatingNavTab(
     onClick: () -> Unit
 ) {
     val colors = pingChatColors
-    Column(
+    Box(
         modifier = modifier
+            .fillMaxHeight()
             .clip(RoundedCornerShape(12.dp))
             .clickable(onClick = onClick),
-        horizontalAlignment = Alignment.CenterHorizontally,
-        verticalArrangement = Arrangement.Center
+        contentAlignment = Alignment.Center
     ) {
-        Box(
-            modifier = Modifier.size(40.dp),
-            contentAlignment = Alignment.Center
-        ) {
-            if (selected) {
-                Box(
-                    modifier = Modifier
-                        .size(40.dp)
-                        .clip(CircleShape)
-                        .background(Emerald),
-                    contentAlignment = Alignment.Center
+        if (selected) {
+            // Green pill: 58dp wide, 47dp tall, 12dp corners — icon
+            // and label both inside, white. (63 - 47) / 2 = 8dp above
+            // and below inside the bar.
+            Box(
+                modifier = Modifier
+                    .size(width = 58.dp, height = 47.dp)
+                    .clip(RoundedCornerShape(12.dp))
+                    .background(Emerald),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center
                 ) {
                     Icon(
                         selectedIcon,
                         contentDescription = label,
                         tint = Color.White,
-                        modifier = Modifier.size(22.dp)
+                        modifier = Modifier.size(24.dp)
+                    )
+                    Text(
+                        label,
+                        fontSize = 11.sp,
+                        fontWeight = FontWeight.Bold,
+                        color = Color.White
                     )
                 }
-            } else {
+            }
+        } else {
+            Column(
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.Center
+            ) {
                 Icon(
                     unselectedIcon,
                     contentDescription = label,
                     tint = colors.muted,
                     modifier = Modifier.size(24.dp)
                 )
+                Spacer(Modifier.height(2.dp))
+                Text(
+                    label,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.Normal,
+                    color = colors.muted
+                )
             }
         }
-        Spacer(Modifier.height(2.dp))
-        Text(
-            label,
-            fontSize = 11.sp,
-            fontWeight = if (selected) FontWeight.Bold else FontWeight.Normal,
-            color = if (selected) colors.text else colors.muted
-        )
     }
 }
