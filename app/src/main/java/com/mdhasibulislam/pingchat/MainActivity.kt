@@ -57,6 +57,7 @@ import com.mdhasibulislam.pingchat.ui.screens.NotificationsScreen
 import com.mdhasibulislam.pingchat.ui.screens.PingChatWordmark
 import com.mdhasibulislam.pingchat.ui.screens.PrivacyPolicyScreen
 import com.mdhasibulislam.pingchat.ui.screens.PrivacySecurityScreen
+import com.mdhasibulislam.pingchat.ui.screens.TermsConditionsScreen
 import com.mdhasibulislam.pingchat.ui.screens.RegisterScreen
 import com.mdhasibulislam.pingchat.ui.screens.SetNewPasswordScreen
 import com.mdhasibulislam.pingchat.ui.screens.SettingsScreen
@@ -483,6 +484,7 @@ class MainActivity : ComponentActivity() {
                             PrivacySecurityScreen(
                                 onBack = { navController.popBackStack() },
                                 onOpenPrivacyPolicy = { navController.navigate("privacy_policy") },
+                                onOpenTermsConditions = { navController.navigate("terms_conditions") },
                                 onChangePasswordClick = { navController.navigate("change_password") },
                                 onTwoFactorClick = { navController.navigate("two_factor") }
                             )
@@ -528,6 +530,13 @@ class MainActivity : ComponentActivity() {
                         // Settings > Privacy & Security > "Privacy Policy".
                         composable("privacy_policy") {
                             PrivacyPolicyScreen(onBack = { navController.popBackStack() })
+                        }
+                        // v3.2.4: Terms & Conditions — opened from
+                        // Settings > Privacy & Security > "Terms &
+                        // Conditions". Static text screen, same pattern
+                        // as the Privacy Policy.
+                        composable("terms_conditions") {
+                            TermsConditionsScreen(onBack = { navController.popBackStack() })
                         }
                         composable("chat/{conversationId}") { backStackEntry ->
                             val conversationId =
