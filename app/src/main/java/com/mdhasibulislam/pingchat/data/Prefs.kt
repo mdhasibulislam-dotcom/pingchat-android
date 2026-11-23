@@ -100,6 +100,18 @@ class Prefs(context: Context) {
         set(value) { sp.edit().putBoolean("notification_preview", value).apply() }
 
     /**
+     * Private-profile explainer (Edit Profile, v3.2.4). Set once the
+     * "Private Profile — What happens when it's turned on?" bottom
+     * sheet has been shown, so turning Private Profile on does not nag
+     * the user every time — only the first time. Plain boolean flag
+     * (no Compose state): EditProfileScreen reads it when the toggle
+     * changes and MainActivity never needs to observe it.
+     */
+    var privateProfileExplainerShown: Boolean
+        get() = sp.getBoolean("private_profile_explainer_shown", false)
+        set(value) { sp.edit().putBoolean("private_profile_explainer_shown", value).apply() }
+
+    /**
      * Muted conversation ids, v3.1.0 (local mirror of the is_muted flag on
      * the caller's participant row). PingChatMessagingService reads this
      * — not the database — because the service runs outside any signed-in

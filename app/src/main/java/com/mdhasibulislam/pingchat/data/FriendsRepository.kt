@@ -74,6 +74,15 @@ class FriendsRepository {
         if (privacyRepo.isBlockedByMe(userId) || privacyRepo.amBlockedBy(userId)) {
             throw IllegalStateException("You cannot send a friend request to this person.")
         }
+        // v3.2.4 (bug 2): enforce the RECIPIENT's "Who Can Add You"
+        // setting — canSendFriendRequestTo had zero callers, so the
+        // setting saved but never blocked anything. The message is
+        // user-facing: it never exposes which setting blocked it.
+        // (The recreated server RPC enforces the same rule as a
+        // backstop; see database/migration-v324-privacy-fixes.sql.)
+        if (!privacyRepo.canSendFriendRequestTo(userId)) {
+            throw IllegalStateException("This person isn't accepting friend requests.")
+        }
         client.postgrest.rpc(
             "pingchat_send_friend_request",
             buildJsonObject { put("p_user_id", userId) }

@@ -106,6 +106,28 @@ object SessionManager {
         }
     }
 
+    /**
+     * v3.2.4 (bug 4): refresh presence visibility for a whole list of
+     * peers at once (the Chats list calls this when it loads). Only
+     * peers NOT yet cached are fetched — one check is a visibility RPC
+     * + a friendship check + two block reads per peer, so re-fetching
+     * the whole list on every refresh would be wasteful; the cache
+     * lives for the session and is cleared on sign-out. A peer whose
+     * setting changes mid-session picks it up on the next sign-in.
+     */
+    fun refreshPresenceVisibilityFor(peerIds: Collection<String>) {
+        val uncached = peerIds.filter { it !in _presenceVisibility.value }.distinct()
+        if (uncached.isEmpty()) return
+        scope.launch {
+            for (peerId in uncached) {
+                try {
+                    isPresenceVisible(peerId)
+                } catch (e: Exception) {
+                }
+            }
+        }
+    }
+
     /** Emitted whenever any of my conversations changes (new message, etc.). */
     private val _feedTick = MutableSharedFlow<Unit>(extraBufferCapacity = 1)
     val feedTick: SharedFlow<Unit> = _feedTick.asSharedFlow()
@@ -253,6 +275,10 @@ object SessionManager {
         _user.value = null
         _profile.value = null
         _onlineIds.value = emptySet()
+        // v3.2.4 (bug 4): drop the presence-visibility cache too — it
+        // belongs to this account; a different sign-in must not inherit
+        // another account's cached "may I see them" answers.
+        _presenceVisibility.value = emptyMap()
     }
 
     /** pingchat_profiles.online = true/false (+ last_seen when going offline). */

@@ -162,16 +162,72 @@ class AuthRepository {
     fun currentLoginEmail(): String? = auth.currentUserOrNull()?.email
 
     /**
+     * The new email address waiting for confirmation, or null when no
+     * email change is pending (v3.2.4, Bug 3 fix).
+     *
+     * With "Confirm email" ON, GoTrue keeps the CURRENT email in
+     * [currentLoginEmail] and puts the requested new address in the
+     * user's `new_email` field until the new address is confirmed.
+     * That field is the single source of truth for the pending state:
+     * it survives app restarts (it comes from the server session),
+     * and it clears itself the moment the change is confirmed — so
+     * the screen never has to guess, and never shows the new address
+     * as the login email before it is real.
+     */
+    fun currentPendingLoginEmail(): String? = auth.currentUserOrNull()?.newEmail
+
+    /**
+     * Re-read the current user from the server and update the stored
+     * session (best effort — a stale local session must never fail a
+     * save). Call after [updateLoginEmail] so [currentLoginEmail] /
+     * [currentPendingLoginEmail] reflect what the server just did.
+     */
+    suspend fun refreshCurrentUser() {
+        try {
+            auth.retrieveUserForCurrentSession(updateSession = true)
+        } catch (e: Exception) {
+            // Offline or expired session — the cached user stays, and
+            // the next open of Privacy & Security re-reads it anyway.
+        }
+    }
+
+    /**
+     * Resend the email-change confirmation to a pending new address
+     * (v3.2.4, Bug 3 fix). Straightforward resend via the existing
+     * auth.resendEmail — same call shape as [resendConfirmationEmail],
+     * but with OtpType.Email.EMAIL_CHANGE. Supabase enforces a
+     * 60-second cooldown between sends; the caller disables its
+     * resend button for 60s (see [friendlyError]).
+     */
+    suspend fun resendEmailChangeConfirmation(email: String) {
+        auth.resendEmail(
+            type = OtpType.Email.EMAIL_CHANGE,
+            email = email.trim(),
+            redirectUrl = AUTH_REDIRECT_URL
+        )
+    }
+
+    /**
      * Change the sign-in email (v3.1.0 Privacy: Login Email).
-     * Supabase sends a confirmation to the NEW address when email
-     * confirmation is on; with confirmation OFF in this project the
-     * change applies at once. Throws on an invalid or already
-     * registered address — callers show friendlyError(e).
+     *
+     * v3.2.4 (Bug 3 fix): with email confirmation ON in this project,
+     * Supabase sends a confirmation to the NEW address and the change
+     * only applies AFTER the new address is confirmed — the current
+     * email stays the login email until then, and the new address
+     * shows up in [currentPendingLoginEmail]. Callers MUST NOT swap
+     * the displayed login email to the new address on save; they show
+     * the current email plus the pending address instead. Throws on
+     * an invalid or already registered address — callers show
+     * friendlyError(e).
      */
     suspend fun updateLoginEmail(newEmail: String) {
         auth.updateUser {
             email = newEmail.trim()
         }
+        // Pull the server's answer into the local session, so the
+        // pending new_email is visible immediately (not only after
+        // the next sign-in).
+        refreshCurrentUser()
     }
 
     // ---------- Two-factor authentication (TOTP, v3.2.0) ----------
@@ -459,6 +515,8 @@ class AuthRepository {
                     "That username is already taken."
                 m.contains("not friends", ignoreCase = true) ->
                     "You need to be friends first."
+                m.contains("isn't accepting friend requests", ignoreCase = true) ->
+                    "This person isn't accepting friend requests."
                 m.contains("provider", ignoreCase = true) &&
                     m.contains("not enabled", ignoreCase = true) ->
                     "Google sign-in is not turned on for this app yet. Please log in with email instead."

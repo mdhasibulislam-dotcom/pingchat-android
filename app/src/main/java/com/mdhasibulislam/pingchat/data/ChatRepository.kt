@@ -17,6 +17,7 @@ import io.github.jan.supabase.realtime.realtime
 import io.github.jan.supabase.realtime.track
 import io.github.jan.supabase.storage.storage
 import io.ktor.http.ContentType
+import java.time.Duration
 import java.time.Instant
 import java.util.UUID
 import kotlinx.coroutines.channels.awaitClose
@@ -25,7 +26,10 @@ import kotlinx.coroutines.flow.callbackFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 
 /**
@@ -52,6 +56,7 @@ import kotlinx.serialization.json.put
  */
 class ChatRepository {
     private val client get() = Supabase.client
+    private val privacyRepo = PrivacyRepository()
 
     fun myId(): String? = client.auth.currentUserOrNull()?.id
 
@@ -535,12 +540,58 @@ class ChatRepository {
         }
     }
 
-    /** Find the 1-to-1 conversation with another user, or create it (friend-gated). */
+    /**
+     * Find the 1-to-1 conversation with another user, or create it (friend-gated).
+     * v3.2.4 (bug 1): a NEWLY created conversation inherits MY
+     * auto-delete default (Privacy & Security > Auto-Delete Messages):
+     * the server RPC inserts the row with auto_delete = 'off' and
+     * cannot take a timer, so the default is applied right after
+     * creation (see [applyAutoDeleteDefault]). Every call site
+     * (ChatScreen, PeopleViewModel, StoryRepository) goes through
+     * here, so the default applies on all creation paths.
+     */
     suspend fun getOrCreateConversation(otherUserId: String): String {
-        return client.postgrest.rpc(
+        val conversationId = client.postgrest.rpc(
             "pingchat_get_or_create_conversation",
             buildJsonObject { put("p_user_id", otherUserId) }
         ).decodeAs<String>()
+        applyAutoDeleteDefault(conversationId)
+        return conversationId
+    }
+
+    /**
+     * v3.2.4 (bug 1a): apply my auto-delete default to a conversation
+     * that was JUST created by [getOrCreateConversation] above.
+     * Only when ALL of these hold, so an existing chat is never
+     * touched and a per-chat timer is never overwritten:
+     * - my default is not Off (nothing to apply otherwise);
+     * - the row's auto_delete is still 'off' (no timer set yet);
+     * - the row's created_at is within ~2 minutes of now (it was
+     *   created by this very call; up to 5 minutes into the future
+     *   is allowed for device-clock skew — server time leads).
+     * Best-effort: any failure here must never break opening a chat
+     * (the conversation id is already in hand).
+     */
+    private suspend fun applyAutoDeleteDefault(conversationId: String) {
+        try {
+            val default = privacyRepo.loadMySettings().autoDelete
+            if (default == AutoDeleteTimer.OFF) return
+            val row = client.from("pingchat_conversations").select {
+                filter { eq("id", conversationId) }
+            }.decodeSingleOrNull<JsonObject>() ?: return
+            val current = AutoDeleteTimer.fromDb(
+                row["auto_delete"]?.jsonPrimitive?.contentOrNull
+            )
+            if (current != AutoDeleteTimer.OFF) return
+            val createdAt = TimeFormat.parse(
+                row["created_at"]?.jsonPrimitive?.contentOrNull
+            ) ?: return
+            val ageSeconds = Duration.between(createdAt, Instant.now()).seconds
+            if (ageSeconds < -300 || ageSeconds > 120) return
+            privacyRepo.setConversationAutoDelete(conversationId, default)
+        } catch (e: Exception) {
+            // best-effort: opening the chat matters, the timer does not
+        }
     }
 
     suspend fun deleteForMe(conversationId: String, messageId: String): Boolean {
