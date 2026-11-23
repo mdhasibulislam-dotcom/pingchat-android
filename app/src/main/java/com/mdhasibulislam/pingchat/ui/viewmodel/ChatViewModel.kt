@@ -5,6 +5,7 @@ import android.media.MediaRecorder
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import com.mdhasibulislam.pingchat.data.AuthRepository
+import com.mdhasibulislam.pingchat.data.AutoDeleteTimer
 import com.mdhasibulislam.pingchat.data.ChatMessage
 import com.mdhasibulislam.pingchat.data.ChatRepository
 import com.mdhasibulislam.pingchat.data.ConversationItem
@@ -77,6 +78,32 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
      *  true AND the peer is offline AND has a last_seen timestamp. */
     private val _canSeePeerLastSeen = MutableStateFlow(true)
     val canSeePeerLastSeen: StateFlow<Boolean> = _canSeePeerLastSeen.asStateFlow()
+
+    /**
+     * v3.2.4 (bug 1): this chat's per-chat auto-delete timer (Off when
+     * unset), loaded when the chat opens. The peer profile screen
+     * shows it and saves changes via [setAutoDeleteTimer]. 1-to-1
+     * only — the peer profile screen does not exist for groups.
+     */
+    private val _autoDeleteTimer = MutableStateFlow(AutoDeleteTimer.OFF)
+    val autoDeleteTimer: StateFlow<AutoDeleteTimer> = _autoDeleteTimer.asStateFlow()
+
+    /** Change this chat's auto-delete timer (peer profile screen).
+     *  Optimistic: the picker closes at once; on failure the old
+     *  value is restored and the error is shown. */
+    fun setAutoDeleteTimer(timer: AutoDeleteTimer) {
+        val previous = _autoDeleteTimer.value
+        if (timer == previous) return
+        _autoDeleteTimer.value = timer
+        viewModelScope.launch {
+            try {
+                privacyRepo.setConversationAutoDelete(conversationId, timer)
+            } catch (e: Exception) {
+                _autoDeleteTimer.value = previous
+                _error.value = "Could not change the disappearing-messages setting. Try again."
+            }
+        }
+    }
 
     private val _peerLastReadAt = MutableStateFlow<String?>(null)
     val peerLastReadAt: StateFlow<String?> = _peerLastReadAt.asStateFlow()
@@ -207,6 +234,10 @@ class ChatViewModel(private val conversationId: String) : ViewModel() {
                 if (peerProfile != null) {
                     _canSeePeerLastSeen.value =
                         privacyRepo.canSeeLastSeen(peerProfile.id)
+                    // v3.2.4 (bug 1): this chat's auto-delete timer
+                    // (Off when unset / migration not run yet).
+                    _autoDeleteTimer.value =
+                        privacyRepo.getConversationAutoDelete(conversationId)
                 }
             }
             loadMessages()

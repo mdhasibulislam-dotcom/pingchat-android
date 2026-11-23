@@ -15,6 +15,7 @@ import com.mdhasibulislam.pingchat.data.PushSender
 import com.mdhasibulislam.pingchat.data.SessionManager
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -35,6 +36,24 @@ class PeopleViewModel : ViewModel() {
 
     private val _requests = MutableStateFlow<List<Pair<Friendship, Profile>>>(emptyList())
     val requests: StateFlow<List<Pair<Friendship, Profile>>> = _requests.asStateFlow()
+
+    /**
+     * Requests I sent that are still pending — derived from [_users] +
+     * [_statuses] (PENDING_OUT), no extra query. Kept in sync by
+     * [recomputeSentRequests] after every refresh / send / cancel.
+     */
+    private val _sentRequests = MutableStateFlow<List<Profile>>(emptyList())
+    val sentRequests: StateFlow<List<Profile>> = _sentRequests.asStateFlow()
+
+    /**
+     * Mutual-friend counts for the current incoming requesters, keyed by
+     * user id. Real data via the pingchat_mutual_friends RPC (see
+     * ProfileRepository); a failed lookup leaves that requester at 0 and
+     * the screen hides the mutual-friends line instead of showing a
+     * made-up number.
+     */
+    private val _mutualCounts = MutableStateFlow<Map<String, Int>>(emptyMap())
+    val mutualCounts: StateFlow<Map<String, Int>> = _mutualCounts.asStateFlow()
 
     private val _friends = MutableStateFlow<List<Profile>>(emptyList())
     val friends: StateFlow<List<Profile>> = _friends.asStateFlow()
@@ -181,10 +200,38 @@ class PeopleViewModel : ViewModel() {
                     async { user.id to repo.friendshipStatus(user.id) }
                 }.awaitAll().toMap()
                 _statuses.value = statuses
+                recomputeSentRequests()
+                loadMutualCounts()
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
             }
             _loading.value = false
+        }
+    }
+
+    /** Sent requests still pending, derived from [_users] + [_statuses]. */
+    private fun recomputeSentRequests() {
+        val statuses = _statuses.value
+        _sentRequests.value = _users.value.filter { statuses[it.id] == FriendState.PENDING_OUT }
+    }
+
+    /** Mutual-friend counts for the current incoming requesters (parallel RPCs). */
+    private suspend fun loadMutualCounts() {
+        val ids = _requests.value.map { it.second.id }
+        if (ids.isEmpty()) {
+            _mutualCounts.value = emptyMap()
+            return
+        }
+        _mutualCounts.value = coroutineScope {
+            ids.map { id ->
+                async {
+                    id to try {
+                        profileRepo.loadMutualFriends(id).size
+                    } catch (e: Exception) {
+                        0
+                    }
+                }
+            }.awaitAll().toMap()
         }
     }
 
@@ -197,6 +244,7 @@ class PeopleViewModel : ViewModel() {
             try {
                 repo.sendFriendRequest(userId)
                 _statuses.value = _statuses.value + (userId to FriendState.PENDING_OUT)
+                recomputeSentRequests()
                 notifyRecipient(userId)
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
@@ -242,6 +290,7 @@ class PeopleViewModel : ViewModel() {
             try {
                 repo.cancelFriendRequest(userId)
                 _statuses.value = _statuses.value + (userId to FriendState.NONE)
+                recomputeSentRequests()
             } catch (e: Exception) {
                 _error.value = AuthRepository.friendlyError(e)
             }
