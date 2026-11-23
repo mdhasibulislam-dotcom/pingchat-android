@@ -226,6 +226,7 @@ fun ChatScreen(
     val searchMatchIndex by viewModel.searchMatchIndex.collectAsState()
     val forwardTargets by viewModel.forwardTargets.collectAsState()
     val canSeePeerLastSeen by viewModel.canSeePeerLastSeen.collectAsState()
+    val autoDeleteTimer by viewModel.autoDeleteTimer.collectAsState()
     val senderNames = viewModel.senderNames
 
     val peerOnline = peer?.let { onlineIds.contains(it.id) } ?: false
@@ -1316,6 +1317,8 @@ fun ChatScreen(
                     isPinned = chatPinned,
                     isArchived = chatArchived,
                     chatTheme = chatTheme,
+                    autoDeleteTimer = autoDeleteTimer,
+                    onAutoDeleteSelected = { viewModel.setAutoDeleteTimer(it) },
                     onBack = { showProfile = false },
                     onAudioCall = { requestCall("audio") },
                     onVideoCall = { requestCall("video") },

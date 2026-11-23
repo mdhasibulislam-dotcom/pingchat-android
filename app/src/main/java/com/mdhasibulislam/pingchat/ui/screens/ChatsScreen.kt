@@ -106,6 +106,12 @@ fun ChatsScreen(
     val loading by viewModel.loading.collectAsState()
     val error by viewModel.error.collectAsState()
     val onlineIds by SessionManager.onlineIds.collectAsState()
+    // v3.2.4 (bug 4): the per-peer presence-visibility cache — peer id
+    // -> whether *I* may see their online state under THEIR "Last Seen
+    // & Online" setting. Uncached peers read as visible until the
+    // check lands (the v3.0.2 behaviour). Collected as state so the
+    // list recomposes when a check result arrives.
+    val presenceVisibility by SessionManager.presenceVisibility.collectAsState()
     val myId = SessionManager.user.collectAsState().value?.uid
     // Own avatar: explicit param first, session profile as fallback.
     val sessionProfile by SessionManager.profile.collectAsState()
@@ -126,6 +132,16 @@ fun ChatsScreen(
     LaunchedEffect(Unit) {
         viewModel.attachPrefs(Prefs(context))
         viewModel.refresh()
+    }
+    // v3.2.4 (bug 4): whenever the list (re)loads, fetch presence
+    // visibility for the 1-to-1 peers not yet cached, so the Active
+    // tab and the online dots below honour each peer's "Last Seen &
+    // Online" setting. Refreshing only uncached peers keeps this
+    // cheap after the first load.
+    LaunchedEffect(items) {
+        SessionManager.refreshPresenceVisibilityFor(
+            items.filter { !it.isGroup }.mapNotNull { it.peer?.id }
+        )
     }
     // 0 = Chat (all conversations), 1 = Active (online people only).
     var tab by remember { mutableStateOf(0) }
@@ -280,8 +296,14 @@ fun ChatsScreen(
                 }
             } else if (tab == 1) {
                 // Active tab: only the people who are online right now
-                // (1-to-1 chats only — groups have no single peer).
-                val activeItems = filtered.filter { !it.isGroup && it.peer != null && onlineIds.contains(it.peer.id) }
+                // (1-to-1 chats only — groups have no single peer) AND
+                // whose "Last Seen & Online" setting lets me see them
+                // (v3.2.4 bug 4: "Nobody" hides them here entirely).
+                val activeItems = filtered.filter {
+                    !it.isGroup && it.peer != null &&
+                        onlineIds.contains(it.peer.id) &&
+                        (presenceVisibility[it.peer.id] ?: true)
+                }
                 if (activeItems.isEmpty()) {
                     Box(modifier = Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
                         Text(
@@ -319,7 +341,14 @@ fun ChatsScreen(
                         items(filtered, key = { it.conversation.id }) { item ->
                             ConversationRow(
                                 item = item,
-                                online = !item.isGroup && item.peer != null && onlineIds.contains(item.peer.id),
+                                // v3.2.4 (bug 4): the online dot also
+                                // honours the peer's "Last Seen &
+                                // Online" setting — "Nobody" makes the
+                                // dot grey, so the peer looks offline
+                                // exactly like any other offline peer.
+                                online = !item.isGroup && item.peer != null &&
+                                    onlineIds.contains(item.peer.id) &&
+                                    (presenceVisibility[item.peer.id] ?: true),
                                 myId = myId,
                                 onClick = { onOpenChat(item.conversation.id) },
                                 onLongPress = { menuItem = item }

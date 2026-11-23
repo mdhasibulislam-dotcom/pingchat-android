@@ -23,6 +23,7 @@ import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.Call
 import androidx.compose.material.icons.filled.ChevronRight
 import androidx.compose.material.icons.filled.DeleteForever
+import androidx.compose.material.icons.filled.Description
 import androidx.compose.material.icons.filled.Devices
 import androidx.compose.material.icons.filled.DoneAll
 import androidx.compose.material.icons.filled.History
@@ -36,6 +37,7 @@ import androidx.compose.material.icons.filled.PersonAdd
 import androidx.compose.material.icons.filled.PhoneAndroid
 import androidx.compose.material.icons.filled.PrivacyTip
 import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.Visibility
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.CircularProgressIndicator
@@ -78,6 +80,7 @@ import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
 import com.mdhasibulislam.pingchat.ui.theme.Emerald
 import com.mdhasibulislam.pingchat.ui.theme.pingChatColors
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
@@ -100,7 +103,15 @@ import kotlinx.coroutines.launch
  *   (Messages, Bio and Devices are already in the sections above as
  *   Message Privacy, Profile Visibility and Active Sessions — all 11
  *   settings are reachable, none dropped.)
- * - Privacy Policy row at the bottom.
+ * - Privacy Policy + Terms & Conditions rows at the bottom
+ *   (v3.2.4), then the green "Your privacy, our priority" card.
+ *
+ * v3.2.4 Login Email fix (Bug 3): the row always shows the CURRENT
+ * confirmed email; a requested new address shows only as "pending
+ * confirmation" (from GoTrue's `new_email`, via
+ * AuthRepository.currentPendingLoginEmail) with a resend button,
+ * until the new address is confirmed. The displayed value is never
+ * swapped on save.
  *
  * Read Receipts / Typing Indicator / Who Can Add You persist in the
  * new columns from database/migration-v320-privacy-toggles.sql —
@@ -110,6 +121,7 @@ import kotlinx.coroutines.launch
 fun PrivacySecurityScreen(
     onBack: () -> Unit,
     onOpenPrivacyPolicy: () -> Unit = {},
+    onOpenTermsConditions: () -> Unit = {},
     onChangePasswordClick: () -> Unit = {},
     onTwoFactorClick: () -> Unit = {}
 ) {
@@ -124,6 +136,14 @@ fun PrivacySecurityScreen(
     var saving by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var loginEmail by remember { mutableStateOf<String?>(null) }
+    // v3.2.4 (Bug 3 fix): the new address waiting for confirmation, or
+    // null when no email change is pending. Read from the server
+    // (AuthRepository.currentPendingLoginEmail, GoTrue's `new_email`),
+    // never set optimistically — see the Login Email dialog below.
+    var pendingLoginEmail by remember { mutableStateOf<String?>(null) }
+    var emailInfo by remember { mutableStateOf<String?>(null) }
+    var resendCooldown by remember { mutableStateOf(0) }
+    var resendBusy by remember { mutableStateOf(false) }
     var devices by remember { mutableStateOf<List<DeviceInfo>>(emptyList()) }
     var blockedUsers by remember { mutableStateOf<List<Profile>>(emptyList()) }
     var mfaEnabled by remember { mutableStateOf(false) }
@@ -145,6 +165,7 @@ fun PrivacySecurityScreen(
             try {
                 settings = repo.loadMySettings()
                 loginEmail = authRepo.currentLoginEmail()
+                pendingLoginEmail = authRepo.currentPendingLoginEmail()
                 devices = repo.loadDevices()
                 blockedUsers = repo.loadBlockedUsers()
                 mfaEnabled = authRepo.isMfaEnabled()
@@ -157,6 +178,15 @@ fun PrivacySecurityScreen(
     }
 
     LaunchedEffect(Unit) { refresh() }
+
+    // Resend-confirmation cooldown (same 60s as the signup
+    // verification screen — Supabase enforces it server-side too).
+    LaunchedEffect(resendCooldown) {
+        if (resendCooldown > 0) {
+            delay(1000)
+            resendCooldown--
+        }
+    }
 
     /** Save one settings change, then refresh the row values. */
     fun save(patch: suspend () -> PrivacySettings) {
@@ -226,7 +256,7 @@ fun PrivacySecurityScreen(
                 }
 
                 // ---------- Account Security ----------
-                SectionHeader("Account Security")
+                SectionHeader("Account Security", Icons.Filled.Shield)
                 SettingsCard {
                     NavRow(
                         icon = Icons.Filled.Lock,
@@ -314,7 +344,7 @@ fun PrivacySecurityScreen(
                 Spacer(Modifier.height(24.dp))
 
                 // ---------- Privacy Settings ----------
-                SectionHeader("Privacy Settings")
+                SectionHeader("Privacy Settings", Icons.Filled.Lock)
                 SettingsCard {
                     if (s != null) {
                         NavRow(
@@ -381,23 +411,88 @@ fun PrivacySecurityScreen(
                 Spacer(Modifier.height(24.dp))
 
                 // ---------- More Settings (rest of the 11 v3.1.0 items) ----------
-                SectionHeader("More Settings")
+                SectionHeader("More Settings", Icons.Filled.Tune)
                 SettingsCard {
+                    // v3.2.4 (Bug 3 fix): the row ALWAYS shows the CURRENT
+                    // confirmed login email. A requested new address is
+                    // shown only as "pending confirmation" in the banner
+                    // below — never as the login email, so it can never
+                    // look like it changed and then "reverted".
                     NavRow(
                         icon = Icons.Filled.Mail,
                         title = "Login Email",
                         subtitle = loginEmail ?: "Not signed in with email",
                         onClick = {
-                            emailDraft = loginEmail ?: ""
+                            // Draft the pending address if one exists, so
+                            // the user can correct a typo instead of
+                            // starting over.
+                            emailDraft = pendingLoginEmail ?: loginEmail ?: ""
                             emailError = null
+                            emailInfo = null
                             emailDialog = true
                         }
                     )
+                    // Pending-confirmation banner: the new address, a
+                    // short note, and a resend button. Shown only while
+                    // GoTrue still reports a pending new_email.
+                    val pending = pendingLoginEmail?.takeIf { !it.equals(loginEmail, ignoreCase = true) }
+                    if (pending != null) {
+                        Column(modifier = Modifier.padding(bottom = 12.dp)) {
+                            Text(
+                                "Pending confirmation: $pending",
+                                style = MaterialTheme.typography.bodyMedium,
+                                color = colors.text,
+                                fontWeight = FontWeight.Medium
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            Text(
+                                "Check that inbox and tap the confirmation link. " +
+                                    "Until then, your login email stays ${loginEmail ?: "unchanged"}.",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = colors.muted
+                            )
+                            Spacer(Modifier.height(4.dp))
+                            TextButton(
+                                onClick = {
+                                    scope.launch {
+                                        resendBusy = true
+                                        try {
+                                            authRepo.resendEmailChangeConfirmation(pending)
+                                            emailInfo = "Confirmation email re-sent to $pending."
+                                            resendCooldown = 60
+                                        } catch (e: Exception) {
+                                            emailInfo = AuthRepository.friendlyError(e)
+                                        } finally {
+                                            resendBusy = false
+                                        }
+                                    }
+                                },
+                                enabled = !resendBusy && resendCooldown == 0
+                            ) {
+                                Text(
+                                    if (resendCooldown > 0) "Resend in ${resendCooldown}s"
+                                    else "Resend confirmation email"
+                                )
+                            }
+                        }
+                    }
+                    if (emailInfo != null) {
+                        Text(
+                            emailInfo ?: "",
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = colors.text2,
+                            modifier = Modifier.padding(bottom = 12.dp)
+                        )
+                    }
                     CardDivider()
                     NavRow(
                         icon = Icons.Filled.Devices,
                         title = "Devices",
-                        subtitle = if (devices.isEmpty()) "No devices found" else "${devices.size} device${if (devices.size == 1) "" else "s"} signed in",
+                        subtitle = run {
+                            val active = devices.count { !it.revoked }
+                            if (active == 0) "No devices signed in"
+                            else "$active device${if (active == 1) "" else "s"} signed in"
+                        },
                         onClick = { devicesExpandedMore = !devicesExpandedMore }
                     )
                     if (devicesExpandedMore) {
@@ -490,14 +585,18 @@ fun PrivacySecurityScreen(
                         NavRow(
                             icon = Icons.Filled.Message,
                             title = "Forwarded Messages",
-                            subtitle = "Who can forward your messages: ${s.forwarded.label}.",
+                            subtitle = "Who can forward your messages",
+                            badge = s.forwarded.label,
+                            badgeOn = true,
                             onClick = { optionTarget = "forwarded" }
                         )
                         CardDivider()
                         NavRow(
                             icon = Icons.Filled.Mic,
                             title = "Voice Messages",
-                            subtitle = "Who can send you voice messages: ${s.voice.label}.",
+                            subtitle = "Who can send you voice messages",
+                            badge = s.voice.label,
+                            badgeOn = true,
                             onClick = { optionTarget = "voice" }
                         )
                     }
@@ -511,14 +610,43 @@ fun PrivacySecurityScreen(
                         subtitle = "How PingChat handles your data.",
                         onClick = onOpenPrivacyPolicy
                     )
+                    CardDivider()
+                    NavRow(
+                        icon = Icons.Filled.Description,
+                        title = "Terms & Conditions",
+                        subtitle = "Read our terms and conditions.",
+                        onClick = onOpenTermsConditions
+                    )
+                }
+                Spacer(Modifier.height(16.dp))
+                // Green priority card (mockup footer card).
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(RoundedCornerShape(16.dp))
+                        .background(Emerald)
+                        .padding(16.dp)
+                ) {
+                    Text(
+                        "Your privacy, our priority",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = Color.White,
+                        fontWeight = FontWeight.Bold
+                    )
+                    Spacer(Modifier.height(4.dp))
+                    Text(
+                        "Control what you share and who can see it.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = Color.White
+                    )
                 }
                 Spacer(Modifier.height(16.dp))
                 Text(
-                    "Blocked people cannot message you, call you, or see your profile details. They are not told that you blocked them.",
+                    "Your privacy is important to us. You're in control of what others can see.",
                     style = MaterialTheme.typography.bodySmall,
                     color = colors.muted
                 )
-                Spacer(Modifier.height(16.dp))
+                Spacer(Modifier.height(32.dp))
             }
         }
     }
@@ -620,6 +748,15 @@ fun PrivacySecurityScreen(
     }
 
     // ---------- change login email dialog ----------
+    // v3.2.4 (Bug 3 fix): the old code did `loginEmail = next` on save,
+    // so the row showed the NEW address at once — then "reverted" to the
+    // old one on the next open, because with "Confirm email" ON the
+    // change only applies after the new address is confirmed. Now the
+    // displayed login email is NEVER swapped on save: after saving we
+    // re-read both values from the server. The row keeps showing the
+    // current confirmed email, and the new address appears only as
+    // "pending confirmation" (see the banner under the Login Email row)
+    // until the confirmation link is tapped.
     if (emailDialog) {
         AlertDialog(
             onDismissRequest = { emailDialog = false },
@@ -627,7 +764,10 @@ fun PrivacySecurityScreen(
             text = {
                 Column {
                     Text(
-                        "Your sign-in email. A confirmation may be sent to the new address.",
+                        "Your sign-in email is ${loginEmail ?: "not set"}. " +
+                            "Enter a new address and we will send a confirmation " +
+                            "to it — your login email stays the same until you " +
+                            "confirm the new one.",
                         style = MaterialTheme.typography.bodyMedium,
                         color = colors.text2
                     )
@@ -652,11 +792,26 @@ fun PrivacySecurityScreen(
                         emailError = "Enter a valid email address."
                         return@TextButton
                     }
+                    if (next.equals(loginEmail, ignoreCase = true)) {
+                        emailError = "That is already your login email."
+                        return@TextButton
+                    }
                     scope.launch {
                         try {
                             authRepo.updateLoginEmail(next)
-                            loginEmail = next
+                            // Re-read from the server — do NOT assign
+                            // `next` to loginEmail here.
+                            loginEmail = authRepo.currentLoginEmail()
+                            pendingLoginEmail = authRepo.currentPendingLoginEmail()
                             emailDialog = false
+                            emailInfo = if (pendingLoginEmail != null) {
+                                "Confirmation sent to $next. Your login email " +
+                                    "stays ${loginEmail ?: "the same"} until you confirm it."
+                            } else if (loginEmail.equals(next, ignoreCase = true)) {
+                                "Your login email is now $next."
+                            } else {
+                                "Email change requested for $next — check that inbox for the confirmation link."
+                            }
                         } catch (e: Exception) {
                             emailError = AuthRepository.friendlyError(e)
                         }
@@ -670,17 +825,23 @@ fun PrivacySecurityScreen(
     }
 }
 
-/** Section title above a white card ("Account Security", ...). */
+/** Section title above a white card ("Account Security", ...), with a small icon. */
 @Composable
-private fun SectionHeader(text: String) {
+private fun SectionHeader(text: String, icon: ImageVector) {
     val colors = pingChatColors
-    Text(
-        text = text,
-        style = MaterialTheme.typography.titleMedium,
-        color = colors.text,
-        fontWeight = FontWeight.Bold,
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.padding(start = 4.dp, bottom = 8.dp)
-    )
+    ) {
+        Icon(icon, contentDescription = null, tint = colors.text2, modifier = Modifier.size(18.dp))
+        Spacer(Modifier.width(8.dp))
+        Text(
+            text = text,
+            style = MaterialTheme.typography.titleMedium,
+            color = colors.text,
+            fontWeight = FontWeight.Bold
+        )
+    }
 }
 
 /** White card with 16dp rounded corners holding the rows. */

@@ -154,14 +154,22 @@ fun SettingsScreen(
             SettingsNavRow(
                 icon = Icons.Default.Security,
                 title = "Privacy & Security",
-                subtitle = "Who can see you, message you or call you.",
+                subtitle = "Control your privacy and security",
                 onClick = onPrivacySecurityClick
             )
             HorizontalDivider(color = colors.border)
+            // v3.2.4: NO unread badge on Notifications — there is no
+            // unread-notifications data source in the app. Notifications
+            // are FCM push only (PingChatMessagingService shows them and
+            // they are gone); there is no in-app inbox or notifications
+            // table to count. The only unread counts that exist are
+            // per-chat unread MESSAGE counts (ChatRepository), which are
+            // not notifications — showing one here as a notification
+            // badge would be a fake count. Left off deliberately.
             SettingsNavRow(
                 icon = Icons.Default.Notifications,
                 title = "Notifications",
-                subtitle = "Push, message, call and preview settings.",
+                subtitle = "Manage alerts and updates",
                 onClick = onNotificationsClick
             )
             HorizontalDivider(color = colors.border)
@@ -191,7 +199,7 @@ fun SettingsScreen(
             HorizontalDivider(color = colors.border)
             SettingsNavRow(
                 icon = Icons.Default.Info,
-                title = "About PingChat BD",
+                title = "About PingChat",
                 subtitle = "Version ${BuildConfig.VERSION_NAME}",
                 onClick = { aboutDialog = true }
             )
@@ -270,11 +278,12 @@ fun SettingsScreen(
         )
     }
 
-    // About: the real version from BuildConfig (v3.2.2) — never hardcoded.
+    // About: the real version from BuildConfig (v3.2.3, becomes 3.2.4
+    // with the coordinator's version bump) — never hardcoded.
     if (aboutDialog) {
         AlertDialog(
             onDismissRequest = { aboutDialog = false },
-            title = { Text("About PingChat BD") },
+            title = { Text("About PingChat") },
             text = {
                 Text(
                     text = buildAnnotatedString {

@@ -42,6 +42,7 @@ import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Share
 import androidx.compose.material.icons.filled.Star
+import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material.icons.filled.Verified
 import androidx.compose.material.icons.filled.Videocam
 import androidx.compose.material3.AlertDialog
@@ -80,6 +81,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import coil.compose.AsyncImage
+import com.mdhasibulislam.pingchat.data.AutoDeleteTimer
 import com.mdhasibulislam.pingchat.data.Profile
 import com.mdhasibulislam.pingchat.ui.components.Avatar
 import com.mdhasibulislam.pingchat.ui.components.AvatarSize
@@ -189,7 +191,14 @@ fun ChatPeerProfileScreen(
     onShareContact: () -> Unit,
     /** Called with the chosen reason + optional details when a report is sent. */
     onReportSubmit: (reason: String, details: String?) -> Unit,
-    onChatThemeSelected: (String) -> Unit
+    onChatThemeSelected: (String) -> Unit,
+    /** v3.2.4 (bug 1): this chat's per-chat auto-delete timer, loaded
+     *  by ChatViewModel when the chat opens. Defaults keep the
+     *  existing call site compiling; ChatScreen wires the real value
+     *  (viewModel.autoDeleteTimer + viewModel::setAutoDeleteTimer). */
+    autoDeleteTimer: AutoDeleteTimer = AutoDeleteTimer.OFF,
+    /** Called with the newly chosen timer (Off / 24h / 7d / 30d). */
+    onAutoDeleteSelected: (AutoDeleteTimer) -> Unit = {}
 ) {
     val colors = pingChatColors
     val context = LocalContext.current
@@ -201,6 +210,7 @@ fun ChatPeerProfileScreen(
     var showTopMenu by remember { mutableStateOf(false) }
     var showMoreSheet by remember { mutableStateOf(false) }
     var showThemePicker by remember { mutableStateOf(false) }
+    var showAutoDeletePicker by remember { mutableStateOf(false) }
     var showReport by remember { mutableStateOf(false) }
     var reportReason by remember { mutableStateOf<String?>(null) }
     var reportDetails by remember { mutableStateOf("") }
@@ -572,6 +582,18 @@ fun ChatPeerProfileScreen(
                     onClick = { showThemePicker = true }
                 )
                 HorizontalDivider(color = colors.border)
+                // v3.2.4 (bug 1): per-chat auto-delete timer — the
+                // setting that actually makes messages disappear. The
+                // value is this conversation's timer (not the global
+                // default); the nightly server cleanup deletes messages
+                // older than it.
+                ProfileRow(
+                    icon = Icons.Default.Timer,
+                    label = "Disappearing Messages",
+                    value = autoDeleteTimer.label,
+                    onClick = { showAutoDeletePicker = true }
+                )
+                HorizontalDivider(color = colors.border)
                 ProfileRow(
                     icon = Icons.Default.Security,
                     label = "Privacy & Security",
@@ -696,6 +718,57 @@ fun ChatPeerProfileScreen(
             },
             confirmButton = {
                 TextButton(onClick = { showThemePicker = false }) { Text("Done") }
+            }
+        )
+    }
+
+    // ---- Disappearing Messages picker (v3.2.4, bug 1): per-chat
+    // auto-delete timer — Off / 24 hours / 7 days / 30 days. The
+    // nightly server cleanup (pingchat_cleanup_auto_delete) deletes
+    // messages older than the chosen timer. Same radio-list pattern
+    // as the Chat Theme picker above. ----
+    if (showAutoDeletePicker) {
+        AlertDialog(
+            onDismissRequest = { showAutoDeletePicker = false },
+            title = { Text("Disappearing Messages") },
+            text = {
+                Column(modifier = Modifier.fillMaxWidth()) {
+                    Text(
+                        text = "Messages in this chat will disappear after the selected time.",
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = colors.text
+                    )
+                    Spacer(Modifier.height(8.dp))
+                    AutoDeleteTimer.entries.forEach { option ->
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clickable {
+                                    showAutoDeletePicker = false
+                                    onAutoDeleteSelected(option)
+                                }
+                                .padding(vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            RadioButton(
+                                selected = autoDeleteTimer == option,
+                                onClick = {
+                                    showAutoDeletePicker = false
+                                    onAutoDeleteSelected(option)
+                                }
+                            )
+                            Spacer(Modifier.width(8.dp))
+                            Text(
+                                text = option.label,
+                                style = MaterialTheme.typography.bodyLarge,
+                                color = colors.text
+                            )
+                        }
+                    }
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showAutoDeletePicker = false }) { Text("Done") }
             }
         )
     }
