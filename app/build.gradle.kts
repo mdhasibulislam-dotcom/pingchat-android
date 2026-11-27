@@ -21,8 +21,8 @@ android {
         // project (tjsalnhtuqqigyhvgpnb). Same package name, so this
         // installs over v2.0.9 — but Supabase Auth is a separate system,
         // so users must register fresh accounts.
-        versionCode = 26
-        versionName = "3.2.4"
+        versionCode = 27
+        versionName = "3.2.5"
     }
 
     // All debug builds share the committed app/debug.keystore, so every CI

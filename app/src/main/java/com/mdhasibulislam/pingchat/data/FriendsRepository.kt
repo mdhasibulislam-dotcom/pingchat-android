@@ -126,6 +126,23 @@ class FriendsRepository {
         }
     }
 
+    /**
+     * v3.2.5: unfriend — delete an ACCEPTED friendship, either side of
+     * the row. A plain client delete cannot do this: the RLS policy
+     * only lets the requester delete a PENDING row (cancel). The
+     * server RPC pingchat_remove_friend (SECURITY DEFINER, see
+     * database/migration-v325-unfriend.sql) does the delete instead.
+     * After unfriending, either side may send a fresh request
+     * (send_friend_request deletes old declined rows first); blocking
+     * is separate and unchanged.
+     */
+    suspend fun removeFriend(userId: String) {
+        client.postgrest.rpc(
+            "pingchat_remove_friend",
+            buildJsonObject { put("p_user_id", userId) }
+        )
+    }
+
     /** Pending requests sent TO me, with the requester's profile. */
     suspend fun loadIncomingRequests(): List<Pair<Friendship, Profile>> {
         val me = myId() ?: return emptyList()

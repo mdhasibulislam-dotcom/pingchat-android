@@ -1,5 +1,10 @@
 package com.mdhasibulislam.pingchat.ui.screens
 
+import android.Manifest
+import android.content.pm.PackageManager
+import android.widget.Toast
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -31,18 +36,21 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import androidx.compose.ui.window.Dialog
+import androidx.core.content.ContextCompat
 import com.mdhasibulislam.pingchat.data.CallManager
 import com.mdhasibulislam.pingchat.data.CallSession
 import com.mdhasibulislam.pingchat.data.CallStatus
@@ -68,7 +76,55 @@ private fun callStatusText(session: CallSession): String =
 @Composable
 fun IncomingCallDialog(incoming: IncomingCall, viewModel: CallViewModel) {
     val colors = pingChatColors
+    val context = LocalContext.current
     val peer = Profile(id = incoming.peerId, username = "", fullName = incoming.peerName)
+    // v3.2.5: the accept buttons used to call acceptCall with no
+    // permission check — if CAMERA was never granted (e.g. only audio
+    // calls were ever made), CallManager.createLocalTracks threw a
+    // SecurityException, the call was declined to the caller and the
+    // callee only saw "Microphone/camera unavailable". Gate on the same
+    // permissions as the outgoing path (ChatScreen.requestCall /
+    // MainScreen.requestCall): audio needs the microphone, video needs
+    // the microphone + camera.
+    var pendingAcceptKind by remember { mutableStateOf<String?>(null) }
+    val acceptPermission = rememberLauncherForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { result ->
+        val kind = pendingAcceptKind
+        pendingAcceptKind = null
+        if (kind == null) return@rememberLauncherForActivityResult
+        val needed = if (kind == "video") {
+            arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+        } else {
+            arrayOf(Manifest.permission.RECORD_AUDIO)
+        }
+        if (needed.all { result[it] == true }) {
+            viewModel.acceptCall(kind)
+        } else {
+            Toast.makeText(
+                context,
+                if (kind == "video") "Microphone and camera permission is needed for video calls."
+                else "Microphone permission is needed for audio calls.",
+                Toast.LENGTH_SHORT
+            ).show()
+        }
+    }
+    fun requestAccept(kind: String) {
+        val needed = if (kind == "video") {
+            arrayOf(Manifest.permission.RECORD_AUDIO, Manifest.permission.CAMERA)
+        } else {
+            arrayOf(Manifest.permission.RECORD_AUDIO)
+        }
+        if (needed.all {
+                ContextCompat.checkSelfPermission(context, it) == PackageManager.PERMISSION_GRANTED
+            }
+        ) {
+            viewModel.acceptCall(kind)
+        } else {
+            pendingAcceptKind = kind
+            acceptPermission.launch(needed)
+        }
+    }
     Dialog(onDismissRequest = {}) {
         Column(
             modifier = Modifier
@@ -98,11 +154,11 @@ fun IncomingCallDialog(incoming: IncomingCall, viewModel: CallViewModel) {
                     modifier = Modifier.weight(1f)
                 ) { Text("Decline") }
                 Button(
-                    onClick = { viewModel.acceptCall("audio") },
+                    onClick = { requestAccept("audio") },
                     modifier = Modifier.weight(1f)
                 ) { Text("Audio") }
                 Button(
-                    onClick = { viewModel.acceptCall("video") },
+                    onClick = { requestAccept("video") },
                     modifier = Modifier.weight(1f)
                 ) { Text("Video") }
             }
@@ -276,45 +332,65 @@ private fun CallControlButton(
 }
 
 /**
- * A WebRTC video track rendered into a SurfaceViewRenderer. The track is
- * attached as a sink after composition (and detached on dispose / when
- * the track changes), so a track that arrives before the view exists
- * still shows up.
+ * A WebRTC video track rendered into a SurfaceViewRenderer.
+ *
+ * v3.2.5: the sink used to be attached only in a DisposableEffect on
+ * the track, while the view was created in the AndroidView factory —
+ * if the factory ran while eglContext was null (or the view was
+ * recreated), the sink never got attached and the video stayed black
+ * with no error. The sink is now attached in the factory AND
+ * re-attached whenever the track changes, and init() is never called
+ * with a null EGL context.
  */
 @Composable
 private fun VideoRenderer(track: VideoTrack?, mirror: Boolean, modifier: Modifier) {
     val eglContext = CallManager.eglContext
-    val holder = remember { arrayOfNulls<SurfaceViewRenderer>(1) }
-    DisposableEffect(track) {
-        val view = holder[0]
-        if (track != null && view != null) {
-            try {
-                track.addSink(view)
-            } catch (e: Exception) {
-            }
-        }
-        onDispose {
-            try {
-                if (track != null && view != null) track.removeSink(view)
-            } catch (e: Exception) {
-            }
-        }
-    }
+    val attachedTrack = remember { mutableStateOf<VideoTrack?>(null) }
     AndroidView(
         factory = { context ->
             SurfaceViewRenderer(context).apply {
-                init(eglContext, null)
-                setEnableHardwareScaler(true)
-                setMirror(mirror)
-                holder[0] = this
+                if (eglContext != null) {
+                    init(eglContext, null)
+                    setEnableHardwareScaler(true)
+                    setMirror(mirror)
+                    track?.let {
+                        try {
+                            it.addSink(this)
+                            attachedTrack.value = it
+                        } catch (e: Exception) {
+                        }
+                    }
+                }
+            }
+        },
+        update = { view ->
+            if (attachedTrack.value !== track) {
+                attachedTrack.value?.let {
+                    try {
+                        it.removeSink(view)
+                    } catch (e: Exception) {
+                    }
+                }
+                if (track != null) {
+                    try {
+                        track.addSink(view)
+                        attachedTrack.value = track
+                    } catch (e: Exception) {
+                    }
+                } else {
+                    attachedTrack.value = null
+                }
             }
         },
         modifier = modifier,
         onRelease = { view ->
-            try {
-                track?.removeSink(view)
-            } catch (e: Exception) {
+            attachedTrack.value?.let {
+                try {
+                    it.removeSink(view)
+                } catch (e: Exception) {
+                }
             }
+            attachedTrack.value = null
             view.release()
         }
     )

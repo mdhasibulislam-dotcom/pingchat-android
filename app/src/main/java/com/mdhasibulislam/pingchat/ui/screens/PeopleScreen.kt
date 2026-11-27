@@ -637,6 +637,8 @@ fun ProfilePreviewDialog(
     onDecline: () -> Unit,
     onDismiss: () -> Unit,
     onClearChat: (() -> Unit)? = null,
+    /** v3.2.5: unfriend — only shown for friends, next to Clear chat. */
+    onUnfriend: (() -> Unit)? = null,
     /** v3.1.0: open the full public profile screen for this person. */
     onViewProfile: (() -> Unit)? = null
 ) {
@@ -701,6 +703,11 @@ fun ProfilePreviewDialog(
                         FriendState.PENDING_IN -> {
                             Button(onClick = onAccept) { Text("Accept") }
                             OutlinedButton(onClick = onDecline) { Text("Decline") }
+                        }
+                    }
+                    if (state == FriendState.FRIENDS && onUnfriend != null) {
+                        TextButton(onClick = onUnfriend) {
+                            Text("Unfriend", color = MaterialTheme.colorScheme.error)
                         }
                     }
                     if (onClearChat != null) {

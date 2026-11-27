@@ -18,7 +18,9 @@ import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withTimeoutOrNull
 import org.webrtc.AudioTrack
 import kotlin.coroutines.resume
+import org.webrtc.Camera1Enumerator
 import org.webrtc.Camera2Enumerator
+import org.webrtc.CameraEnumerator
 import org.webrtc.CameraVideoCapturer
 import org.webrtc.DataChannel
 import org.webrtc.DefaultVideoDecoderFactory
@@ -731,29 +733,93 @@ object CallManager {
         val audioSource = f.createAudioSource(MediaConstraints())
         localAudioTrack = f.createAudioTrack("ARDAMSa0", audioSource)
         if (kind == "video") {
-            val enumerator = Camera2Enumerator(context)
-            val names = enumerator.deviceNames
-            val front = names.firstOrNull { enumerator.isFrontFacing(it) } ?: names.firstOrNull()
-            if (front == null) return false
-            val cap = enumerator.createCapturer(front, null) as? CameraVideoCapturer ?: return false
             val egl = eglBase ?: return false
-            val source = f.createVideoSource(cap.isScreencast)
-            try {
-                cap.initialize(
-                    SurfaceTextureHelper.create("CaptureThread", egl.eglBaseContext),
-                    context.applicationContext,
-                    source.capturerObserver
-                )
-                cap.startCapture(1280, 720, 30)
-            } catch (e: Exception) {
+            val source = f.createVideoSource(false)
+            if (!startVideoCapture(context, source, egl.eglBaseContext)) {
+                try {
+                    source.dispose()
+                } catch (e: Exception) {
+                }
                 return false
             }
-            capturer = cap
             videoSource = source
             localVideoTrackObj = f.createVideoTrack("ARDAMSv0", source)
             _localVideoTrack.value = localVideoTrackObj
         }
         return true
+    }
+
+    /**
+     * v3.2.5: open the front camera and start capturing, with
+     * fallbacks. Previously this was Camera2 only at a fixed 1280x720@30
+     * with a null CameraEventsHandler — on devices where Camera2 fails
+     * (some Redmi/Xiaomi Camera2 quirks) the call connected with audio
+     * but no video frames were ever produced and nothing told the user.
+     * Now a real events handler surfaces a camera error (the call ends
+     * cleanly with a toast instead of sitting black), and capture falls
+     * back to Camera1, then to 640x480, before giving up.
+     */
+    private fun startVideoCapture(
+        context: Context,
+        source: VideoSource,
+        eglContext: EglBase.Context
+    ): Boolean {
+        val handler = object : CameraVideoCapturer.CameraEventsHandler {
+            override fun onCameraError(errorDescription: String?) {
+                scope.launch {
+                    endCallInternal("Camera error. The call has ended.")
+                }
+            }
+
+            override fun onCameraDisconnected() {}
+            override fun onCameraFreezed(freezeDurationMs: String) {}
+            override fun onCameraOpening(cameraName: String?) {}
+            override fun onFirstFrameAvailable() {}
+            override fun onCameraClosed() {}
+        }
+        // (width, height, fps) to try, best first.
+        val resolutions = listOf(Triple(1280, 720, 30), Triple(640, 480, 30))
+        val enumerators: List<CameraEnumerator> = listOf(
+            Camera2Enumerator(context),
+            Camera1Enumerator()
+        )
+        for (enumerator in enumerators) {
+            val names = try {
+                enumerator.deviceNames
+            } catch (e: Exception) {
+                emptyArray()
+            }
+            val front = names.firstOrNull {
+                try {
+                    enumerator.isFrontFacing(it)
+                } catch (e: Exception) {
+                    false
+                }
+            } ?: names.firstOrNull() ?: continue
+            for ((width, height, fps) in resolutions) {
+                val cap = try {
+                    enumerator.createCapturer(front, handler)
+                } catch (e: Exception) {
+                    null
+                } as? CameraVideoCapturer ?: continue
+                try {
+                    cap.initialize(
+                        SurfaceTextureHelper.create("CaptureThread", eglContext),
+                        context.applicationContext,
+                        source.capturerObserver
+                    )
+                    cap.startCapture(width, height, fps)
+                    capturer = cap
+                    return true
+                } catch (e: Exception) {
+                    try {
+                        cap.dispose()
+                    } catch (_: Exception) {
+                    }
+                }
+            }
+        }
+        return false
     }
 
     private fun makePeerConnection(callId: String, peerId: String): PeerConnection? {

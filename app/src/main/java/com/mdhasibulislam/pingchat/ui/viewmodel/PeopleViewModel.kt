@@ -297,6 +297,23 @@ class PeopleViewModel : ViewModel() {
         }
     }
 
+    /** v3.2.5: unfriend someone — removes the friendship and updates
+     *  the local state (status back to NONE, out of the friends list).
+     *  The ex-friend can send a new request afterwards; blocking is
+     *  separate and must be done explicitly. */
+    fun removeFriend(userId: String) {
+        viewModelScope.launch {
+            try {
+                repo.removeFriend(userId)
+                _statuses.value = _statuses.value + (userId to FriendState.NONE)
+                _friends.value = _friends.value.filter { it.id != userId }
+                recomputeSentRequests()
+            } catch (e: Exception) {
+                _error.value = AuthRepository.friendlyError(e)
+            }
+        }
+    }
+
     fun respond(requesterId: String, accept: Boolean) {
         viewModelScope.launch {
             try {

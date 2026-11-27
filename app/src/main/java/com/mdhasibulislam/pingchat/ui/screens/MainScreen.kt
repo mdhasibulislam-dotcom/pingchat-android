@@ -30,10 +30,13 @@ import androidx.compose.material.icons.outlined.Call
 import androidx.compose.material.icons.outlined.ChatBubbleOutline
 import androidx.compose.material.icons.outlined.Group
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
@@ -188,6 +191,9 @@ fun MainScreen(
     // Profile preview dialog (People tab) — state lives here so it can use
     // the same PeopleViewModel instance for the friend actions.
     var preview by remember { mutableStateOf<Pair<Profile, FriendState>?>(null) }
+    // v3.2.5: unfriend confirmation — set from the preview dialog's
+    // Unfriend button, confirmed here before PeopleViewModel.removeFriend.
+    var confirmUnfriend by remember { mutableStateOf<Profile?>(null) }
 
     // v3.2.1: no top bar — the Chats tab owns its header (logo + search
     // + avatar, which opens the own profile), and Calls / People /
@@ -388,7 +394,28 @@ fun MainScreen(
             onAccept = { peopleViewModel.respond(profile.id, true); preview = null },
             onDecline = { peopleViewModel.respond(profile.id, false); preview = null },
             onDismiss = { preview = null },
+            onUnfriend = { confirmUnfriend = profile },
             onViewProfile = { preview = null; publicProfile = profile to state }
+        )
+    }
+    // v3.2.5: unfriend confirmation (same AlertDialog style as the
+    // Clear chat confirm in ChatScreen). Confirming removes the
+    // friendship; the ex-friend can send a new request afterwards.
+    confirmUnfriend?.let { person ->
+        AlertDialog(
+            onDismissRequest = { confirmUnfriend = null },
+            title = { Text("Unfriend ${person.fullName.ifBlank { person.username }}?") },
+            text = { Text("You will no longer be friends. You can send a new friend request later.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    confirmUnfriend = null
+                    preview = null
+                    peopleViewModel.removeFriend(person.id)
+                }) { Text("Unfriend", color = MaterialTheme.colorScheme.error) }
+            },
+            dismissButton = {
+                TextButton(onClick = { confirmUnfriend = null }) { Text("Cancel") }
+            }
         )
     }
 }
